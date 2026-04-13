@@ -27,11 +27,17 @@ def processar_xmls(envio_file, retorno_file):
         n_guia = n_guia_elem.text.strip()
         
         meta = {}
-        tags_meta = ['numeroGuiaOperadora', 'senha', 'dataInicioFat', 
-                     'horaInicioFat', 'dataFimFat', 'horaFimFat', 'situacaoGuia']
-        for tag in tags_meta:
+        # Captura dados básicos do retorno
+        for tag in ['numeroGuiaOperadora', 'senha', 'dataInicioFat', 'horaInicioFat', 'dataFimFat', 'horaFimFat', 'situacaoGuia']:
             elem = relacao.find(f'ans:{tag}', ns)
-            meta[tag] = elem.text if (elem is not None and elem.text) else ""
+            meta[tag] = elem.text.strip() if (elem is not None and elem.text) else ""
+        
+        # REGRA SOLICITADA: Se fim estiver vazio, iguala ao início
+        if not meta['dataFimFat']:
+            meta['dataFimFat'] = meta['dataInicioFat']
+        if not meta['horaFimFat']:
+            meta['horaFimFat'] = meta['horaInicioFat']
+            
         mapa_cabecalho_guia[n_guia] = meta
 
         for item in relacao.findall('.//ans:detalhesGuia', ns):
@@ -56,7 +62,7 @@ def processar_xmls(envio_file, retorno_file):
                     mapa_itens_retorno[c] = deque()
                 mapa_itens_retorno[c].append(conteudo)
 
-    # 2. ESTRUTURA BASE
+    # 2. ESTRUTURA DO NOVO XML
     novo_root = ET.Element('{http://www.ans.gov.br/padroes/tiss/schemas}mensagemTISS')
     if (cab := root_ret.find('ans:cabecalho', ns)) is not None: novo_root.append(cab)
 
@@ -78,28 +84,28 @@ def processar_xmls(envio_file, retorno_file):
     total_geral_lib = 0.0
     guias_processadas = set()
 
-    # 3. BUSCA DE GUIAS NO ENVIO
+    # 3. PROCESSAMENTO DAS GUIAS DO ENVIO
+    # Varre todos os elementos buscando tags de guias (SADT, Resumo, etc)
     for elemento in root_env.findall('.//*', ns):
-        # Filtra apenas tags de guias, ignorando containers
-        tag_lower = elemento.tag.lower()
-        if 'guia' not in tag_lower or any(x in tag_lower for x in ['guiastiss', 'loteguias', 'relacaoguias']):
+        tag_name = elemento.tag.split('}')[-1]
+        if 'guia' not in tag_name.lower() or any(x in tag_name.lower() for x in ['guiastiss', 'loteguias', 'relacaoguias']):
             continue
             
         n_guia_elem = elemento.find('.//ans:numeroGuiaPrestador', ns)
         if n_guia_elem is None: continue
         n_guia_env = n_guia_elem.text.strip()
         
-        # Pula se já processada ou se não estiver no retorno
+        # Evita duplicados e guias que não estão no retorno
         if n_guia_env in guias_processadas or n_guia_env not in mapa_cabecalho_guia:
             continue
             
         guias_processadas.add(n_guia_env)
 
-        # Captura carteira do beneficiário no envio
+        # Captura número da carteira no envio
         carteira_envio = ""
         cart_elem = elemento.find('.//ans:numeroCarteira', ns)
         if cart_elem is not None and cart_elem.text:
-            carteira_envio = cart_elem.text
+            carteira_envio = cart_elem.text.strip()
 
         relacao_guias = ET.SubElement(protocolo, '{http://www.ans.gov.br/padroes/tiss/schemas}relacaoGuias')
         ET.SubElement(relacao_guias, '{http://www.ans.gov.br/padroes/tiss/schemas}numeroGuiaPrestador').text = n_guia_env
@@ -109,11 +115,11 @@ def processar_xmls(envio_file, retorno_file):
         ET.SubElement(relacao_guias, '{http://www.ans.gov.br/padroes/tiss/schemas}senha').text = m['senha']
         ET.SubElement(relacao_guias, '{http://www.ans.gov.br/padroes/tiss/schemas}numeroCarteira').text = carteira_envio
         
+        # Preenche datas e horas (já corrigidas no passo 1)
         for t in ['dataInicioFat', 'horaInicioFat', 'dataFimFat', 'horaFimFat', 'situacaoGuia']:
-            val = m.get(t, "")
-            ET.SubElement(relacao_guias, f'{{http://www.ans.gov.br/padroes/tiss/schemas}}{t}').text = val
+            ET.SubElement(relacao_guias, f'{{http://www.ans.gov.br/padroes/tiss/schemas}}{t}').text = m.get(t, "")
 
-        # Coleta Itens
+        # Itens da Guia
         itens_para_processar = []
         for p in elemento.findall('.//ans:procedimentoExecutado', ns):
             d = p.find('ans:procedimento', ns)
@@ -147,7 +153,6 @@ def processar_xmls(envio_file, retorno_file):
 
             if v_lib > item['v_inf']: v_lib = item['v_inf']
             v_glosa = round(item['v_inf'] - v_lib, 2)
-            
             if v_glosa > 0.001 and (cod_glosa in codigos_para_substituir or cod_glosa is None):
                 cod_glosa = "1801"
             
@@ -172,6 +177,7 @@ def processar_xmls(envio_file, retorno_file):
                 ET.SubElement(rg, '{http://www.ans.gov.br/padroes/tiss/schemas}valorGlosa').text = f"{v_glosa:.2f}"
                 ET.SubElement(rg, '{http://www.ans.gov.br/padroes/tiss/schemas}tipoGlosa').text = str(cod_glosa)
 
+        # Totais da Guia
         ET.SubElement(relacao_guias, '{http://www.ans.gov.br/padroes/tiss/schemas}valorInformadoGuia').text = f"{t_guia_inf:.2f}"
         ET.SubElement(relacao_guias, '{http://www.ans.gov.br/padroes/tiss/schemas}valorProcessadoGuia').text = f"{t_guia_inf:.2f}"
         ET.SubElement(relacao_guias, '{http://www.ans.gov.br/padroes/tiss/schemas}valorLiberadoGuia').text = f"{t_guia_lib:.2f}"
@@ -179,7 +185,7 @@ def processar_xmls(envio_file, retorno_file):
         total_geral_inf += t_guia_inf
         total_geral_lib += t_guia_lib
 
-    # 4. TOTAIS FINAIS
+    # 4. TOTAIS FINAIS DO PROTOCOLO E GERAL
     for b, s in [(protocolo, "Protocolo"), (demonstrativo, "Geral")]:
         ET.SubElement(b, f'{{http://www.ans.gov.br/padroes/tiss/schemas}}valorInformado{s}').text = f"{total_geral_inf:.2f}"
         ET.SubElement(b, f'{{http://www.ans.gov.br/padroes/tiss/schemas}}valorProcessado{s}').text = f"{total_geral_inf:.2f}"
@@ -189,5 +195,4 @@ def processar_xmls(envio_file, retorno_file):
     epilogo = ET.SubElement(novo_root, '{http://www.ans.gov.br/padroes/tiss/schemas}epilogo')
     ET.SubElement(epilogo, '{http://www.ans.gov.br/padroes/tiss/schemas}hash').text = "0" * 32
     
-    rough = ET.tostring(novo_root, 'iso-8859-1')
-    return minidom.parseString(rough).toprettyxml(indent="  ", encoding='ISO-8859-1')
+    return minidom.parseString(ET.tostring(novo_root, 'iso-8859-1')).toprettyxml(indent="  ", encoding='ISO-8859-1')
