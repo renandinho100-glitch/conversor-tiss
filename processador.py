@@ -31,10 +31,15 @@ def processar_xmls(envio_file, retorno_file):
 
     # 3. LOCALIZAR O LOTE CORRETO NO RETORNO GIGANTE
     demonstrativo_correto = None
+    
+    # O script percorre cada demonstrativo do arquivo gigante
     for demo in root_ret.findall('.//ans:demonstrativoAnaliseConta', ns):
+        # Dentro de cada demonstrativo, ele busca a TAG que você mencionou
         lote_no_retorno = demo.find('.//ans:numeroLotePrestador', ns)
+        
+        # Se encontrou a tag e o número for igual ao do seu arquivo de envio...
         if lote_no_retorno is not None and lote_no_retorno.text == lote_procurado:
-            demonstrativo_correto = demo
+            demonstrativo_correto = demo # Achamos o lote certo!
             break
     
     if demonstrativo_correto is None:
