@@ -16,28 +16,24 @@ def processar_xmls(envio_file, retorno_file):
     tree_ret = ET.parse(retorno_file)
     root_ret = tree_ret.getroot()
 
-    # 2. IDENTIFICAR O NÚMERO DO LOTE NO ENVIO (Ajustado para <ans:loteGuias><ans:numeroLote>)
-    # Tentamos o caminho exato que você passou
-    lote_envio_elem = root_env.find('.//ans:loteGuias/ans:numeroLote', ns)
+    # 2. IDENTIFICAR O NÚMERO DO LOTE NO ENVIO (Caminho exato da foto)
+    # Procuramos dentro de prestadorParaOperadora -> loteGuias -> numeroLote
+    lote_envio_elem = root_env.find('.//ans:prestadorParaOperadora/ans:loteGuias/ans:numeroLote', ns)
     
-    # Se não achar pelo caminho direto, fazemos uma busca profunda por qualquer <ans:numeroLote>
+    # Se não achar pelo caminho completo, tenta a busca direta que costuma funcionar
     if lote_envio_elem is None:
         lote_envio_elem = root_env.find('.//ans:numeroLote', ns)
-    
-    # Backup para outras versões do TISS
-    if lote_envio_elem is None:
-        lote_envio_elem = root_env.find('.//ans:numeroLotePrestador', ns)
 
     if lote_envio_elem is None:
-        raise Exception("Não encontrei a tag <ans:numeroLote> no envio. Verifique se o arquivo está correto.")
+        raise Exception("Não consegui encontrar a tag <ans:numeroLote>. Verifique se o XML de ENVIO é uma Guia de Resumo.")
     
     lote_procurado = lote_envio_elem.text.strip()
-    print(f"Lote identificado no envio: {lote_procurado}")
 
-    # 3. LOCALIZAR O LOTE NO RETORNO CONDENSADO
+    # 3. LOCALIZAR O LOTE NO RETORNO CONDENSADO (Arquivo Gigante)
     demonstrativo_correto = None
+    # Varre todos os blocos de demonstrativo no retorno
     for demo in root_ret.findall('.//ans:demonstrativoAnaliseConta', ns):
-        # No retorno, buscamos o lote prestador que identifica o bloco
+        # No retorno, a tag padrão de identificação é numeroLotePrestador
         lote_no_retorno = demo.find('.//ans:numeroLotePrestador', ns)
         
         if lote_no_retorno is not None and lote_no_retorno.text.strip() == lote_procurado:
@@ -45,9 +41,9 @@ def processar_xmls(envio_file, retorno_file):
             break
     
     if demonstrativo_correto is None:
-        raise Exception(f"Lote {lote_procurado} não encontrado no arquivo de retorno (que contém vários lotes).")
+        raise Exception(f"Lote {lote_procurado} não encontrado no arquivo de retorno enviado.")
 
-    # 4. MAPEAMENTO DO RETORNO (Lote Localizado)
+    # 4. MAPEAMENTO DO RETORNO (Deste Lote Específico)
     mapa_itens_retorno = {}
     for relacao in demonstrativo_correto.findall('.//ans:relacaoGuias', ns):
         n_guia = relacao.find('ans:numeroGuiaPrestador', ns).text
@@ -65,12 +61,13 @@ def processar_xmls(envio_file, retorno_file):
             v_lib = float(item.find('.//ans:valorLiberado', ns).text)
             tag_glosa = item.find('.//ans:tipoGlosa', ns)
             cod_glosa = tag_glosa.text if tag_glosa is not None else None
+            
             chave_mestra = f"{n_guia}_{cod}_{data}_{v_inf}"
             if chave_mestra not in mapa_itens_retorno:
                 mapa_itens_retorno[chave_mestra] = deque()
             mapa_itens_retorno[chave_mestra].append({'v_lib': v_lib, 'cod_glosa': cod_glosa, 'meta': meta_guia})
 
-    # 5. GERAR NOVO XML
+    # 5. CONSTRUÇÃO DO NOVO XML
     novo_root = ET.Element('{http://www.ans.gov.br/padroes/tiss/schemas}mensagemTISS')
     cabecalho_orig = root_ret.find('ans:cabecalho', ns)
     if cabecalho_orig is not None: novo_root.append(cabecalho_orig)
@@ -91,8 +88,7 @@ def processar_xmls(envio_file, retorno_file):
         elem = demonstrativo_correto.find(f'.//ans:{t}', ns)
         ET.SubElement(protocolo, f'{{http://www.ans.gov.br/padroes/tiss/schemas}}{t}').text = elem.text if elem is not None else ""
 
-    total_geral_inf = 0.0
-    total_geral_lib = 0.0
+    total_geral_inf, total_geral_lib = 0.0, 0.0
 
     # 6. PROCESSAR GUIAS DO ENVIO
     for guia_envio in root_env.findall('.//ans:guiaResumoInternacao', ns):
@@ -109,8 +105,7 @@ def processar_xmls(envio_file, retorno_file):
             s = d.find('ans:servicosExecutados', ns)
             itens_guia.append({'cod': s.find('ans:codigoProcedimento', ns).text, 'tab': s.find('ans:codigoTabela', ns).text, 'descr': s.find('ans:descricaoProcedimento', ns).text, 'data': s.find('ans:dataExecucao', ns).text, 'v_inf': float(s.find('ans:valorTotal', ns).text), 'qtd': s.find('ans:quantidadeExecutada', ns).text})
 
-        total_guia_inf = 0.0
-        total_guia_lib = 0.0
+        total_guia_inf, total_guia_lib = 0.0, 0.0
         seq = 1
         for item in itens_guia:
             chave = f"{n_guia_env}_{item['cod']}_{item['data']}_{item['v_inf']:.2f}"
