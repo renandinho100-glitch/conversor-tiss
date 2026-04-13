@@ -7,6 +7,7 @@ def processar_xmls(envio_file, retorno_file):
     ns = {'ans': 'http://www.ans.gov.br/padroes/tiss/schemas'}
     ET.register_namespace('ans', "http://www.ans.gov.br/padroes/tiss/schemas")
     
+    # Códigos de glosa genérica que devem ser substituídos por 1801
     codigos_para_substituir = ['1099', '1199', '1999', '3099']
 
     # 1. LER ARQUIVOS
@@ -17,38 +18,45 @@ def processar_xmls(envio_file, retorno_file):
 
     # 2. MAPEAMENTO DO RETORNO
     mapa_itens_retorno = {}
-    mapa_cabecalho_guia = {} # NOVO: Para guardar o cabeçalho pelo número da guia
+    mapa_cabecalho_guia = {} 
     
     for relacao in root_ret.findall('.//ans:relacaoGuias', ns):
         n_guia_elem = relacao.find('ans:numeroGuiaPrestador', ns)
         if n_guia_elem is None: continue
         n_guia = n_guia_elem.text
         
-        # Guardar metadados da guia (independente dos itens)
+        # Mapeia dados da operadora para garantir o cabeçalho da guia
         meta = {}
         tags_meta = ['numeroGuiaOperadora', 'senha', 'dataInicioFat', 
                      'horaInicioFat', 'dataFimFat', 'horaFimFat', 'situacaoGuia']
         for tag in tags_meta:
             elem = relacao.find(f'ans:{tag}', ns)
             meta[tag] = elem.text if elem is not None else ""
-        
         mapa_cabecalho_guia[n_guia] = meta
 
-        # Mapear itens para glosa
+        # Mapeia itens do retorno com suporte a data divergente
         for item in relacao.findall('ans:detalhesGuia', ns):
             cod = item.find('.//ans:codigoProcedimento', ns).text
             data = item.find('ans:dataRealizacao', ns).text
-            v_inf = f"{float(item.find('.//ans:valorInformado', ns).text):.2f}"
+            v_inf_val = float(item.find('.//ans:valorInformado', ns).text)
+            v_inf_str = f"{v_inf_val:.2f}"
             v_lib = float(item.find('.//ans:valorLiberado', ns).text)
+            
             tag_glosa = item.find('.//ans:tipoGlosa', ns)
             cod_glosa = tag_glosa.text if tag_glosa is not None else None
             
-            chave_mestra = f"{n_guia}_{cod}_{data}_{v_inf}"
-            if chave_mestra not in mapa_itens_retorno:
-                mapa_itens_retorno[chave_mestra] = deque()
-            mapa_itens_retorno[chave_mestra].append({'v_lib': v_lib, 'cod_glosa': cod_glosa})
+            # Criamos duas chaves: uma exata e uma flexível (sem data)
+            chave_exata = f"{n_guia}_{cod}_{data}_{v_inf_str}"
+            chave_flex = f"{n_guia}_{cod}_FLEX_{v_inf_str}"
+            
+            conteudo = {'v_lib': v_lib, 'cod_glosa': cod_glosa}
+            
+            for c in [chave_exata, chave_flex]:
+                if c not in mapa_itens_retorno:
+                    mapa_itens_retorno[c] = deque()
+                mapa_itens_retorno[c].append(conteudo)
 
-    # 3. ESTRUTURA DO NOVO XML
+    # 3. ESTRUTURA DO NOVO XML (BASE)
     novo_root = ET.Element('{http://www.ans.gov.br/padroes/tiss/schemas}mensagemTISS')
     cabecalho_orig = root_ret.find('ans:cabecalho', ns)
     if cabecalho_orig is not None: novo_root.append(cabecalho_orig)
@@ -74,7 +82,7 @@ def processar_xmls(envio_file, retorno_file):
     for guia_envio in root_env.findall('.//ans:guiaResumoInternacao', ns):
         n_guia_env = guia_envio.find('.//ans:numeroGuiaPrestador', ns).text
         
-        # CAPTURAR CARTEIRA DO ENVIO
+        # CAPTURAR CARTEIRA DO ENVIO (Prioridade conforme solicitado)
         carteira_envio = ""
         elem_benef = guia_envio.find('.//ans:dadosBeneficiario', ns)
         if elem_benef is not None:
@@ -84,7 +92,7 @@ def processar_xmls(envio_file, retorno_file):
         relacao_guias = ET.SubElement(protocolo, '{http://www.ans.gov.br/padroes/tiss/schemas}relacaoGuias')
         ET.SubElement(relacao_guias, '{http://www.ans.gov.br/padroes/tiss/schemas}numeroGuiaPrestador').text = n_guia_env
         
-        # ESCREVER CABEÇALHO DA GUIA (Sempre que existir no retorno)
+        # ESCREVER CABEÇALHO DA GUIA NA ORDEM DO SCHEMA
         if n_guia_env in mapa_cabecalho_guia:
             m = mapa_cabecalho_guia[n_guia_env]
             ET.SubElement(relacao_guias, '{http://www.ans.gov.br/padroes/tiss/schemas}numeroGuiaOperadora').text = m['numeroGuiaOperadora']
@@ -96,7 +104,7 @@ def processar_xmls(envio_file, retorno_file):
             ET.SubElement(relacao_guias, '{http://www.ans.gov.br/padroes/tiss/schemas}horaFimFat').text = m['horaFimFat']
             ET.SubElement(relacao_guias, '{http://www.ans.gov.br/padroes/tiss/schemas}situacaoGuia').text = m['situacaoGuia']
 
-        # Processar Itens
+        # Coletar itens de Procedimentos e Despesas do Envio
         itens_para_processar = []
         for p in guia_envio.findall('.//ans:procedimentoExecutado', ns):
             d = p.find('ans:procedimento', ns)
@@ -115,13 +123,22 @@ def processar_xmls(envio_file, retorno_file):
 
         total_guia_inf, total_guia_lib, seq = 0.0, 0.0, 1
         for item in itens_para_processar:
-            chave_busca = f"{n_guia_env}_{item['cod']}_{item['data']}_{item['v_inf']:.2f}"
-            v_lib, cod_glosa = 0.0, "1801"
+            v_inf_str = f"{item['v_inf']:.2f}"
+            ch_exata = f"{n_guia_env}_{item['cod']}_{item['data']}_{v_inf_str}"
+            ch_flex = f"{n_guia_env}_{item['cod']}_FLEX_{v_inf_str}"
+            
+            v_lib, cod_glosa, res = 0.0, "1801", None
 
-            if chave_busca in mapa_itens_retorno and len(mapa_itens_retorno[chave_busca]) > 0:
-                dados_res = mapa_itens_retorno[chave_busca].popleft()
-                v_lib, cod_glosa = dados_res['v_lib'], dados_res['cod_glosa']
+            # Tenta Casamento Exato -> Depois Flexível (Data divergente)
+            if ch_exata in mapa_itens_retorno and len(mapa_itens_retorno[ch_exata]) > 0:
+                res = mapa_itens_retorno[ch_exata].popleft()
+            elif ch_flex in mapa_itens_retorno and len(mapa_itens_retorno[ch_flex]) > 0:
+                res = mapa_itens_retorno[ch_flex].popleft()
 
+            if res:
+                v_lib, cod_glosa = res['v_lib'], res['cod_glosa']
+
+            # Regras de Glosa
             if v_lib > item['v_inf']: v_lib = item['v_inf']
             valor_glosa = round(item['v_inf'] - v_lib, 2)
             if valor_glosa > 0.001 and (cod_glosa in codigos_para_substituir or cod_glosa is None):
@@ -130,6 +147,7 @@ def processar_xmls(envio_file, retorno_file):
             total_guia_inf += item['v_inf']
             total_guia_lib += v_lib
 
+            # Montagem das tags de Detalhe
             det = ET.SubElement(relacao_guias, '{http://www.ans.gov.br/padroes/tiss/schemas}detalhesGuia')
             ET.SubElement(det, '{http://www.ans.gov.br/padroes/tiss/schemas}sequencialItem').text = str(seq)
             seq += 1
@@ -138,9 +156,9 @@ def processar_xmls(envio_file, retorno_file):
             ET.SubElement(p_tag, '{http://www.ans.gov.br/padroes/tiss/schemas}codigoTabela').text = item['tab']
             ET.SubElement(p_tag, '{http://www.ans.gov.br/padroes/tiss/schemas}codigoProcedimento').text = item['cod']
             ET.SubElement(p_tag, '{http://www.ans.gov.br/padroes/tiss/schemas}descricaoProcedimento').text = item['descr']
-            ET.SubElement(det, '{http://www.ans.gov.br/padroes/tiss/schemas}valorInformado').text = f"{item['v_inf']:.2f}"
+            ET.SubElement(det, '{http://www.ans.gov.br/padroes/tiss/schemas}valorInformado').text = v_inf_str
             ET.SubElement(det, '{http://www.ans.gov.br/padroes/tiss/schemas}qtdExecutada').text = item['qtd']
-            ET.SubElement(det, '{http://www.ans.gov.br/padroes/tiss/schemas}valorProcessado').text = f"{item['v_inf']:.2f}"
+            ET.SubElement(det, '{http://www.ans.gov.br/padroes/tiss/schemas}valorProcessado').text = v_inf_str
             ET.SubElement(det, '{http://www.ans.gov.br/padroes/tiss/schemas}valorLiberado').text = f"{v_lib:.2f}"
 
             if valor_glosa > 0.001:
@@ -148,7 +166,7 @@ def processar_xmls(envio_file, retorno_file):
                 ET.SubElement(rg, '{http://www.ans.gov.br/padroes/tiss/schemas}valorGlosa').text = f"{valor_glosa:.2f}"
                 ET.SubElement(rg, '{http://www.ans.gov.br/padroes/tiss/schemas}tipoGlosa').text = str(cod_glosa)
 
-        # Totais
+        # Totais da Guia
         ET.SubElement(relacao_guias, '{http://www.ans.gov.br/padroes/tiss/schemas}valorInformadoGuia').text = f"{total_guia_inf:.2f}"
         ET.SubElement(relacao_guias, '{http://www.ans.gov.br/padroes/tiss/schemas}valorProcessadoGuia').text = f"{total_guia_inf:.2f}"
         ET.SubElement(relacao_guias, '{http://www.ans.gov.br/padroes/tiss/schemas}valorLiberadoGuia').text = f"{total_guia_lib:.2f}"
@@ -156,14 +174,16 @@ def processar_xmls(envio_file, retorno_file):
         total_geral_inf += total_guia_inf
         total_geral_lib += total_guia_lib
 
-    # Totais Finais
+    # 5. TOTAIS FINAIS (PROTOCOLO E GERAL)
     for b, s in [(protocolo, "Protocolo"), (demonstrativo, "Geral")]:
         ET.SubElement(b, f'{{http://www.ans.gov.br/padroes/tiss/schemas}}valorInformado{s}').text = f"{total_geral_inf:.2f}"
         ET.SubElement(b, f'{{http://www.ans.gov.br/padroes/tiss/schemas}}valorProcessado{s}').text = f"{total_geral_inf:.2f}"
         ET.SubElement(b, f'{{http://www.ans.gov.br/padroes/tiss/schemas}}valorLiberado{s}').text = f"{total_geral_lib:.2f}"
         ET.SubElement(b, f'{{http://www.ans.gov.br/padroes/tiss/schemas}}valorGlosa{s}').text = f"{total_geral_inf - total_geral_lib:.2f}"
 
+    # 6. FECHAMENTO
     epilogo = ET.SubElement(novo_root, '{http://www.ans.gov.br/padroes/tiss/schemas}epilogo')
     ET.SubElement(epilogo, '{http://www.ans.gov.br/padroes/tiss/schemas}hash').text = "0" * 32
+    
     rough = ET.tostring(novo_root, 'iso-8859-1')
     return minidom.parseString(rough).toprettyxml(indent="  ", encoding='ISO-8859-1')
