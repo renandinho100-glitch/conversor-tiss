@@ -23,7 +23,7 @@ def processar_xmls(envio_file, retorno_file):
     except Exception as e:
         return f"Erro ao ler arquivos XML: {e}"
 
-    # 1. MAPEAMENTO DO RETORNO COM MÚLTIPLAS CHAVES (HIERARQUIA)
+    # 1. MAPEAMENTO DO RETORNO COM HIERARQUIA REFORÇADA
     mapa_retorno = {}
     mapa_cabecalho_guia = {} 
     
@@ -32,7 +32,6 @@ def processar_xmls(envio_file, retorno_file):
         if n_guia_elem is None: continue
         n_guia = n_guia_elem.text.strip()
         
-        # Meta dados da guia
         meta = {}
         for tag in ['numeroGuiaOperadora', 'senha', 'dataInicioFat', 'horaInicioFat', 'dataFimFat', 'horaFimFat', 'situacaoGuia']:
             elem = relacao.find(f'ans:{tag}', ns)
@@ -56,18 +55,20 @@ def processar_xmls(envio_file, retorno_file):
 
             conteudo = {'v_lib': v_lib, 'cod_glosa': cod_glosa, 'cod_retorno': cod}
             
-            # CRIAÇÃO DA HIERARQUIA DE CHAVES
+            # HIERARQUIA DE CHAVES (DA MAIS PRECISA PARA A MAIS FLEXÍVEL)
             chaves = [
-                f"{n_guia}_{cod}_{data}_{v_inf}",               # Nível 1: Exata
-                f"{n_guia}_{data}_{v_inf}_{qtd}_{limpar_texto(descr)}", # Nível 2: Sem Código, com Nome e Qtd
-                f"{n_guia}_{data}_{v_inf}"                      # Nível 3: Data e Valor apenas
+                f"{n_guia}_{cod}_{data}_{v_inf}",               # 1. Exata (Guia+Cod+Data+Valor)
+                f"{n_guia}_{data}_{v_inf}_{qtd}_{limpar_texto(descr)}", # 2. Descrição (Guia+Data+Valor+Nome)
+                f"{n_guia}_{cod}_{v_inf}",                       # 3. Código+Valor (Ignora data alterada)
+                f"{n_guia}_{limpar_texto(descr)}_{v_inf}",      # 4. Nome+Valor (Ignora cod/data alterados)
+                f"{n_guia}_{v_inf}"                             # 5. Apenas Valor (Último caso na guia)
             ]
             
             for c in chaves:
                 if c not in mapa_retorno: mapa_retorno[c] = deque()
                 mapa_retorno[c].append(conteudo)
 
-    # 2. ESTRUTURA BASE DO NOVO XML
+    # 2. ESTRUTURA DO NOVO XML
     novo_root = ET.Element('{http://www.ans.gov.br/padroes/tiss/schemas}mensagemTISS')
     if (cab := root_ret.find('ans:cabecalho', ns)) is not None: novo_root.append(cab)
 
@@ -87,7 +88,7 @@ def processar_xmls(envio_file, retorno_file):
 
     total_inf, total_lib, processadas = 0.0, 0.0, set()
 
-    # 3. PROCESSAMENTO COM BUSCA HIERÁRQUICA
+    # 3. PROCESSAMENTO
     for elemento in root_env.findall('.//*', ns):
         tag_name = elemento.tag.split('}')[-1]
         if 'guia' not in tag_name.lower() or any(x in tag_name.lower() for x in ['guiastiss', 'loteguias', 'relacaoguias']):
@@ -100,7 +101,7 @@ def processar_xmls(envio_file, retorno_file):
         if n_guia_env in processadas or n_guia_env not in mapa_cabecalho_guia: continue
         processadas.add(n_guia_env)
 
-        # Resgate de Senha e Carteira (Regra SADT vs Internação)
+        # Regras de Senha e Carteira
         senha = ""
         if "Internacao" in tag_name:
             s_el = elemento.find('.//ans:dadosAutorizacao/ans:senha', ns)
@@ -124,11 +125,9 @@ def processar_xmls(envio_file, retorno_file):
         for t in ['dataInicioFat', 'horaInicioFat', 'dataFimFat', 'horaFimFat', 'situacaoGuia']:
             ET.SubElement(rel_guia, f'{{http://www.ans.gov.br/padroes/tiss/schemas}}{t}').text = m.get(t, "")
 
-        # Coleta de Itens do Envio
+        # Coleta de Itens
         itens_envio = []
-        # Tenta capturar de procedimentos executados ou despesas
         for item_el in elemento.findall('.//ans:procedimentoExecutado', ns) + elemento.findall('.//ans:despesa', ns):
-            # Normalização de busca para SADT/Internação
             servico = item_el.find('.//ans:servicosExecutados', ns) if item_el.tag.endswith('despesa') else item_el
             proc_dados = servico.find('.//ans:procedimento', ns) if servico.find('.//ans:procedimento', ns) is not None else servico
             
@@ -145,11 +144,13 @@ def processar_xmls(envio_file, retorno_file):
         for item in itens_envio:
             v_str = f"{item['v_inf']:.2f}"
             
-            # TENTA PAREAMENTO POR HIERARQUIA
+            # TENTATIVAS HIERÁRQUICAS (Inclui novas regras de flexibilidade de data/código)
             tentativas = [
-                f"{n_guia_env}_{item['cod']}_{item['data']}_{v_str}",
-                f"{n_guia_env}_{item['data']}_{v_str}_{item['qtd']}_{limpar_texto(item['descr'])}",
-                f"{n_guia_env}_{item['data']}_{v_str}"
+                f"{n_guia_env}_{item['cod']}_{item['data']}_{v_str}", # Nível 1
+                f"{n_guia_env}_{item['data']}_{v_str}_{item['qtd']}_{limpar_texto(item['descr'])}", # Nível 2
+                f"{n_guia_env}_{item['cod']}_{v_str}", # Nível 3 (Data ignorada)
+                f"{n_guia_env}_{limpar_texto(item['descr'])}_{v_str}", # Nível 4 (Cod e Data ignorados)
+                f"{n_guia_env}_{v_str}" # Nível 5 (Apenas valor na guia)
             ]
             
             v_lib, c_glosa, res = 0.0, "1801", None
@@ -159,9 +160,8 @@ def processar_xmls(envio_file, retorno_file):
                     break
 
             if res: v_lib, c_glosa = res['v_lib'], res['cod_glosa']
-            
-            # Se não houver retorno algum, glosa total 1801
             v_glosa = round(item['v_inf'] - v_lib, 2)
+            
             if v_glosa > 0.001 and (c_glosa in codigos_glosa_padrao or c_glosa is None):
                 c_glosa = "1801"
             
@@ -186,7 +186,7 @@ def processar_xmls(envio_file, retorno_file):
                 ET.SubElement(rg, '{http://www.ans.gov.br/padroes/tiss/schemas}valorGlosa').text = f"{v_glosa:.2f}"
                 ET.SubElement(rg, '{http://www.ans.gov.br/padroes/tiss/schemas}tipoGlosa').text = str(c_glosa)
 
-        # Totais da Guia
+        # Totais
         ET.SubElement(rel_guia, '{http://www.ans.gov.br/padroes/tiss/schemas}valorInformadoGuia').text = f"{t_g_inf:.2f}"
         ET.SubElement(rel_guia, '{http://www.ans.gov.br/padroes/tiss/schemas}valorProcessadoGuia').text = f"{t_g_inf:.2f}"
         ET.SubElement(rel_guia, '{http://www.ans.gov.br/padroes/tiss/schemas}valorLiberadoGuia').text = f"{t_g_lib:.2f}"
