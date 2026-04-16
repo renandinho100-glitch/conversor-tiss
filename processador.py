@@ -56,11 +56,10 @@ def processar_xmls(envio_file, retorno_file):
             
             v_lib = float(item.find('.//ans:valorLiberado', ns).text)
             
-            # CORREÇÃO: Pega apenas o primeiro código de glosa disponível e ignora duplicações
+            # Pega o primeiro código de glosa disponível
             g_elem = item.find('.//ans:tipoGlosa', ns)
             cod_glosa = g_elem.text if g_elem is not None else None
 
-            # O valor da glosa será calculado por subtração no processamento, ignorando tags repetidas
             conteudo = {'v_lib': v_lib, 'cod_glosa': cod_glosa}
             
             # HIERARQUIA DE CHAVES
@@ -165,12 +164,17 @@ def processar_xmls(envio_file, retorno_file):
                 v_lib = res['v_lib']
                 c_glosa = res['cod_glosa']
             
-            # CORREÇÃO: Valor da glosa é sempre a diferença matemática (Valor Envio - Valor Liberado)
-            # Ignora repetições de tags do retorno.
+            # Cálculo matemático da glosa (Informado - Liberado)
             v_glosa = round(v_inf_val - v_lib, 2)
 
-            if v_glosa > 0.001 and (c_glosa in codigos_glosa_padrao or c_glosa is None):
-                c_glosa = "1801"
+            # --- REGRAS DE TROCA DE CÓDIGO DE GLOSA ---
+            if v_glosa > 0.001:
+                # Regra Amazonia: 1799 ou 9918 vira 1705
+                if is_amazonia and c_glosa in ['1799', '9918']:
+                    c_glosa = '1705'
+                # Regra Geral: Códigos genéricos viram 1801
+                elif c_glosa in codigos_glosa_padrao or c_glosa is None:
+                    c_glosa = "1801"
             
             t_g_inf += v_inf_val
             t_g_lib += v_lib
