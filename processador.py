@@ -11,7 +11,9 @@ def limpar_texto(texto):
 
 def processar_xmls(envio_file, retorno_file):
     ns = {'ans': 'http://www.ans.gov.br/padroes/tiss/schemas'}
+    # Registro dos namespaces para a saída correta com XSI
     ET.register_namespace('ans', "http://www.ans.gov.br/padroes/tiss/schemas")
+    ET.register_namespace('xsi', "http://www.w3.org/2001/XMLSchema-instance")
     
     codigos_glosa_padrao = ['1099', '1199', '1999', '3099']
 
@@ -53,16 +55,13 @@ def processar_xmls(envio_file, retorno_file):
             data = item.find('ans:dataRealizacao', ns).text if item.find('ans:dataRealizacao', ns) is not None else ""
             v_inf_ret = f"{float(item.find('.//ans:valorInformado', ns).text):.2f}"
             qtd = item.find('.//ans:qtdExecutada', ns).text if item.find('.//ans:qtdExecutada', ns) is not None else "1"
-            
             v_lib = float(item.find('.//ans:valorLiberado', ns).text)
             
-            # Pega o primeiro código de glosa disponível
             g_elem = item.find('.//ans:tipoGlosa', ns)
             cod_glosa = g_elem.text if g_elem is not None else None
 
             conteudo = {'v_lib': v_lib, 'cod_glosa': cod_glosa}
             
-            # HIERARQUIA DE CHAVES
             chaves = []
             if is_amazonia and seq_ret:
                 chaves.append(f"{n_guia}_SEQ_{seq_ret}")
@@ -79,8 +78,11 @@ def processar_xmls(envio_file, retorno_file):
                 if c not in mapa_retorno: mapa_retorno[c] = deque()
                 mapa_retorno[c].append(conteudo)
 
-    # 2. ESTRUTURA DO NOVO XML
-    novo_root = ET.Element('{http://www.ans.gov.br/padroes/tiss/schemas}mensagemTISS')
+    # 2. ESTRUTURA DO NOVO XML COM XSI SCHEMA LOCATION (CORREÇÃO DE FORMATO)
+    novo_root = ET.Element('{http://www.ans.gov.br/padroes/tiss/schemas}mensagemTISS', {
+        '{http://www.w3.org/2001/XMLSchema-instance}schemaLocation': 'http://www.ans.gov.br/padroes/tiss/schemas http://www.ans.gov.br/padroes/tiss/schemas/tissV4_01_00.xsd'
+    })
+    
     if (cab := root_ret.find('ans:cabecalho', ns)) is not None: novo_root.append(cab)
 
     op_para_prest = ET.SubElement(novo_root, '{http://www.ans.gov.br/padroes/tiss/schemas}operadoraParaPrestador')
@@ -161,23 +163,19 @@ def processar_xmls(envio_file, retorno_file):
                     break
 
             if res: 
-                v_lib = res['v_lib']
-                c_glosa = res['cod_glosa']
+                v_lib, c_glosa = res['v_lib'], res['cod_glosa']
             
             # Cálculo matemático da glosa (Informado - Liberado)
             v_glosa = round(v_inf_val - v_lib, 2)
 
-            # --- REGRAS DE TROCA DE CÓDIGO DE GLOSA ---
             if v_glosa > 0.001:
-                # Regra Amazonia: 1799 ou 9918 vira 1705
-                if is_amazonia and c_glosa in ['1799', '9918']:
+                # Regra Amazonia: 1799, 9918 ou 1899 vira 1705
+                if is_amazonia and c_glosa in ['1799', '9918', '1899']:
                     c_glosa = '1705'
-                # Regra Geral: Códigos genéricos viram 1801
                 elif c_glosa in codigos_glosa_padrao or c_glosa is None:
                     c_glosa = "1801"
             
-            t_g_inf += v_inf_val
-            t_g_lib += v_lib
+            t_g_inf, t_g_lib = t_g_inf + v_inf_val, t_g_lib + v_lib
 
             det = ET.SubElement(rel_guia, '{http://www.ans.gov.br/padroes/tiss/schemas}detalhesGuia')
             ET.SubElement(det, '{http://www.ans.gov.br/padroes/tiss/schemas}sequencialItem').text = s_item if s_item else "1"
@@ -200,8 +198,7 @@ def processar_xmls(envio_file, retorno_file):
         ET.SubElement(rel_guia, '{http://www.ans.gov.br/padroes/tiss/schemas}valorProcessadoGuia').text = f"{t_g_inf:.2f}"
         ET.SubElement(rel_guia, '{http://www.ans.gov.br/padroes/tiss/schemas}valorLiberadoGuia').text = f"{t_g_lib:.2f}"
         ET.SubElement(rel_guia, '{http://www.ans.gov.br/padroes/tiss/schemas}valorGlosaGuia').text = f"{t_g_inf - t_g_lib:.2f}"
-        total_inf += t_g_inf
-        total_lib += t_g_lib
+        total_inf, total_lib = total_inf + t_g_inf, total_lib + t_g_lib
 
     for b, s in [(protocolo, "Protocolo"), (demonstrativo, "Geral")]:
         ET.SubElement(b, f'{{http://www.ans.gov.br/padroes/tiss/schemas}}valorInformado{s}').text = f"{total_inf:.2f}"
