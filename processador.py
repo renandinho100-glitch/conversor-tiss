@@ -108,7 +108,6 @@ def processar_xmls(envio_file, retorno_file):
         ET.SubElement(rel_guia, '{http://www.ans.gov.br/padroes/tiss/schemas}senha').text = s_el.text.strip() if s_el is not None and s_el.text else m.get('senha', "")
         ET.SubElement(rel_guia, '{http://www.ans.gov.br/padroes/tiss/schemas}numeroCarteira').text = elemento.find('.//ans:numeroCarteira', ns).text if elemento.find('.//ans:numeroCarteira', ns) is not None else ""
         
-        # REGRA SADT PARA DATAS
         if tag_name == 'guiaSP-SADT':
             dt_inicio = elemento.find('.//ans:dataExecucao', ns) or elemento.find('.//ans:dataRealizacao', ns)
             hr_inicio = elemento.find('.//ans:horaInicioAtendimento', ns) or elemento.find('.//ans:horaFimAtendimento', ns)
@@ -148,12 +147,10 @@ def processar_xmls(envio_file, retorno_file):
             v_inf = res['v_inf'] if res else v_env_str
             v_proc = res['v_proc'] if res else v_env_str
             v_lib = res['v_lib'] if res else v_env_str
-            glosas = res['glosas'] if res else []
+            glosas_originais = res['glosas'] if res else []
 
             det = ET.SubElement(rel_guia, '{http://www.ans.gov.br/padroes/tiss/schemas}detalhesGuia')
             ET.SubElement(det, '{http://www.ans.gov.br/padroes/tiss/schemas}sequencialItem').text = str(idx_env + 1)
-            
-            # NOVAS TAGS OBRIGATÓRIAS POR ITEM
             ET.SubElement(det, '{http://www.ans.gov.br/padroes/tiss/schemas}dataRealizacao').text = dt_exec
             
             ptag = ET.SubElement(det, '{http://www.ans.gov.br/padroes/tiss/schemas}procedimento')
@@ -166,19 +163,23 @@ def processar_xmls(envio_file, retorno_file):
             ET.SubElement(det, '{http://www.ans.gov.br/padroes/tiss/schemas}valorProcessado').text = v_proc
             ET.SubElement(det, '{http://www.ans.gov.br/padroes/tiss/schemas}valorLiberado').text = v_lib
 
-            for g in glosas:
-                tipo = g['tipo']
+            # REGRA ANTI-DUPLICIDADE DE GLOSA
+            tipos_glosa_adicionados = set()
+            for g in glosas_originais:
+                tipo_final = g['tipo']
                 if is_amazonia:
-                    if tipo in codigos_glosa_para_1705: tipo = '1705'
-                    elif tipo in codigos_glosa_padrao: tipo = '1801'
-                rg = ET.SubElement(det, '{http://www.ans.gov.br/padroes/tiss/schemas}relacaoGlosa')
-                ET.SubElement(rg, '{http://www.ans.gov.br/padroes/tiss/schemas}valorGlosa').text = g['valor']
-                ET.SubElement(rg, '{http://www.ans.gov.br/padroes/tiss/schemas}tipoGlosa').text = tipo
+                    if tipo_final in codigos_glosa_para_1705: tipo_final = '1705'
+                    elif tipo_final in codigos_glosa_padrao: tipo_final = '1801'
+                
+                if tipo_final not in tipos_glosa_adicionados:
+                    rg = ET.SubElement(det, '{http://www.ans.gov.br/padroes/tiss/schemas}relacaoGlosa')
+                    ET.SubElement(rg, '{http://www.ans.gov.br/padroes/tiss/schemas}valorGlosa').text = g['valor']
+                    ET.SubElement(rg, '{http://www.ans.gov.br/padroes/tiss/schemas}tipoGlosa').text = tipo_final
+                    tipos_glosa_adicionados.add(tipo_final)
 
             t_g_inf += float(v_inf)
             t_g_lib += float(v_lib)
 
-        # TOTAIS DA GUIA
         ET.SubElement(rel_guia, '{http://www.ans.gov.br/padroes/tiss/schemas}valorInformadoGuia').text = f"{t_g_inf:.2f}"
         ET.SubElement(rel_guia, '{http://www.ans.gov.br/padroes/tiss/schemas}valorProcessadoGuia').text = f"{t_g_inf:.2f}"
         ET.SubElement(rel_guia, '{http://www.ans.gov.br/padroes/tiss/schemas}valorLiberadoGuia').text = f"{t_g_lib:.2f}"
@@ -187,7 +188,6 @@ def processar_xmls(envio_file, retorno_file):
         total_inf_geral += t_g_inf
         total_lib_geral += t_g_lib
 
-    # TOTAIS DO PROTOCOLO E GERAL
     for b, s in [(protocolo, "Protocolo"), (demonstrativo, "Geral")]:
         ET.SubElement(b, f'{{http://www.ans.gov.br/padroes/tiss/schemas}}valorInformado{s}').text = f"{total_inf_geral:.2f}"
         ET.SubElement(b, f'{{http://www.ans.gov.br/padroes/tiss/schemas}}valorProcessado{s}').text = f"{total_inf_geral:.2f}"
