@@ -13,7 +13,6 @@ def processar_xmls(envio_file, retorno_file):
     ET.register_namespace('ans', "http://www.ans.gov.br/padroes/tiss/schemas")
     ET.register_namespace('xsi', "http://www.w3.org/2001/XMLSchema-instance")
     
-    # Configurações de glosa (Amazonia)
     codigos_glosa_para_1705 = ['1799', '9918', '1899']
     codigos_glosa_padrao = ['1099', '1199', '1999', '3099']
 
@@ -25,11 +24,9 @@ def processar_xmls(envio_file, retorno_file):
     except Exception as e:
         return f"Erro ao ler arquivos XML: {e}"
 
-    # IDENTIFICAÇÃO EXCLUSIVA: Amazonia Saúde
     reg_ans_el = root_ret.find('.//ans:registroANS', ns)
     is_amazonia = reg_ans_el is not None and reg_ans_el.text == '419052'
 
-    # 1. MAPEAMENTO DO RETORNO
     mapa_retorno = {}
     mapa_cabecalho_guia = {} 
     
@@ -55,30 +52,27 @@ def processar_xmls(envio_file, retorno_file):
             glosa_info = None
             g_rel = item.find('.//ans:relacaoGlosa', ns)
             if g_rel is not None:
-                glosa_info = {
-                    'valor': g_rel.find('ans:valorGlosa', ns).text,
-                    'tipo': g_rel.find('ans:tipoGlosa', ns).text
-                }
+                glosa_info = {'valor': g_rel.find('ans:valorGlosa', ns).text, 'tipo': g_rel.find('ans:tipoGlosa', ns).text}
 
             dados_item = {
-                'v_inf': v_inf_ret,
-                'v_proc': v_proc_ret,
-                'v_lib': v_lib_ret,
-                'glosa': glosa_info,
-                'cod_ret': cod_ret # Guardamos o código do retorno para uso geral
+                'v_inf': v_inf_ret, 'v_proc': v_proc_ret, 'v_lib': v_lib_ret,
+                'glosa': glosa_info, 'cod_ret': cod_ret
             }
             
-            # Chaves para Amazonia (Rigorosas) ou Padrão
             if is_amazonia:
-                chaves = [f"{n_guia}_SEQ_{seq_ret}", f"{n_guia}_COD_{cod_ret}", f"{n_guia}_VAL_{v_inf_ret}"]
+                # NOVA REGRA: Chave composta Sequencial + Valor para evitar inversão
+                chaves = [
+                    f"{n_guia}_SEQVAL_{seq_ret}_{v_inf_ret}", # Prioridade total: Sequencial E Valor iguais
+                    f"{n_guia}_COD_{cod_ret}",               # Segunda: Mesmo código
+                    f"{n_guia}_VAL_{v_inf_ret}"               # Terceira: Mesmo valor
+                ]
             else:
-                chaves = [f"{n_guia}_{cod_ret}_{v_inf_ret}"] # Comportamento simplificado para outros
+                chaves = [f"{n_guia}_{cod_ret}_{v_inf_ret}"]
             
             for c in chaves:
                 if c not in mapa_retorno: mapa_retorno[c] = deque()
                 mapa_retorno[c].append(dados_item)
 
-    # 2. ESTRUTURA DO NOVO XML
     novo_root = ET.Element('{http://www.ans.gov.br/padroes/tiss/schemas}mensagemTISS', {
         '{http://www.w3.org/2001/XMLSchema-instance}schemaLocation': 'http://www.ans.gov.br/padroes/tiss/schemas http://www.ans.gov.br/padroes/tiss/schemas/tissV4_01_00.xsd'
     })
@@ -100,7 +94,6 @@ def processar_xmls(envio_file, retorno_file):
 
     total_inf, total_lib, processadas = 0.0, 0.0, set()
 
-    # 3. PROCESSAMENTO
     for elemento in root_env.findall('.//*', ns):
         tag_name = elemento.tag.split('}')[-1]
         if 'guia' not in tag_name.lower() or any(x in tag_name.lower() for x in ['guiastiss', 'loteguias', 'relacaoguias']):
@@ -119,8 +112,7 @@ def processar_xmls(envio_file, retorno_file):
         ET.SubElement(rel_guia, '{http://www.ans.gov.br/padroes/tiss/schemas}numeroGuiaOperadora').text = m['numeroGuiaOperadora']
         
         s_el = elemento.find('.//ans:senha', ns) or elemento.find('.//ans:dadosAutorizacao/ans:senha', ns)
-        senha = s_el.text.strip() if s_el is not None and s_el.text else m.get('senha', "")
-        ET.SubElement(rel_guia, '{http://www.ans.gov.br/padroes/tiss/schemas}senha').text = senha
+        ET.SubElement(rel_guia, '{http://www.ans.gov.br/padroes/tiss/schemas}senha').text = s_el.text.strip() if s_el is not None and s_el.text else m.get('senha', "")
         ET.SubElement(rel_guia, '{http://www.ans.gov.br/padroes/tiss/schemas}numeroCarteira').text = elemento.find('.//ans:numeroCarteira', ns).text if elemento.find('.//ans:numeroCarteira', ns) is not None else ""
         
         for t in ['dataInicioFat', 'horaInicioFat', 'dataFimFat', 'horaFimFat', 'situacaoGuia']:
@@ -140,7 +132,8 @@ def processar_xmls(envio_file, retorno_file):
             
             res = None
             if is_amazonia:
-                for crit in [f"{n_guia_env}_SEQ_{s_env}", f"{n_guia_env}_COD_{cod_env}", f"{n_guia_env}_VAL_{v_env_str}"]:
+                # Busca na nova ordem: SEQ+VAL > COD > VAL
+                for crit in [f"{n_guia_env}_SEQVAL_{s_env}_{v_env_str}", f"{n_guia_env}_COD_{cod_env}", f"{n_guia_env}_VAL_{v_env_str}"]:
                     if crit in mapa_retorno and len(mapa_retorno[crit]) > 0:
                         res = mapa_retorno[crit].popleft()
                         break
@@ -160,10 +153,7 @@ def processar_xmls(envio_file, retorno_file):
             
             ptag = ET.SubElement(det, '{http://www.ans.gov.br/padroes/tiss/schemas}procedimento')
             ET.SubElement(ptag, '{http://www.ans.gov.br/padroes/tiss/schemas}codigoTabela').text = proc_dados.find('.//ans:codigoTabela', ns).text
-            
-            # REGRA 5: Troca o código APENAS se for Amazonia
-            codigo_final = cod_env if is_amazonia else (res['cod_ret'] if res else cod_env)
-            ET.SubElement(ptag, '{http://www.ans.gov.br/padroes/tiss/schemas}codigoProcedimento').text = codigo_final
+            ET.SubElement(ptag, '{http://www.ans.gov.br/padroes/tiss/schemas}codigoProcedimento').text = cod_env
             ET.SubElement(ptag, '{http://www.ans.gov.br/padroes/tiss/schemas}descricaoProcedimento').text = proc_dados.find('.//ans:descricaoProcedimento', ns).text
             
             ET.SubElement(det, '{http://www.ans.gov.br/padroes/tiss/schemas}valorInformado').text = v_inf
@@ -176,7 +166,6 @@ def processar_xmls(envio_file, retorno_file):
                 if is_amazonia:
                     if tipo in codigos_glosa_para_1705: tipo = '1705'
                     elif tipo in codigos_glosa_padrao: tipo = '1801'
-                
                 rg = ET.SubElement(det, '{http://www.ans.gov.br/padroes/tiss/schemas}relacaoGlosa')
                 ET.SubElement(rg, '{http://www.ans.gov.br/padroes/tiss/schemas}valorGlosa').text = glosa['valor']
                 ET.SubElement(rg, '{http://www.ans.gov.br/padroes/tiss/schemas}tipoGlosa').text = tipo
