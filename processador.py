@@ -132,6 +132,8 @@ def processar_xmls(envio_file, retorno_file):
             proc_dados = servico.find('.//ans:procedimento', ns) if servico.find('.//ans:procedimento', ns) is not None else servico
             cod_env = proc_dados.find('.//ans:codigoProcedimento', ns).text
             v_env_str = f"{float(servico.find('.//ans:valorTotal', ns).text):.2f}"
+            dt_exec = servico.find('.//ans:dataExecucao', ns).text if servico.find('.//ans:dataExecucao', ns) is not None else data_fatura
+            qtd_exec = servico.find('.//ans:quantidadeExecutada', ns).text if servico.find('.//ans:quantidadeExecutada', ns) is not None else "1"
             
             res = None
             inicio_janela = max(0, idx_env - 5)
@@ -150,12 +152,17 @@ def processar_xmls(envio_file, retorno_file):
 
             det = ET.SubElement(rel_guia, '{http://www.ans.gov.br/padroes/tiss/schemas}detalhesGuia')
             ET.SubElement(det, '{http://www.ans.gov.br/padroes/tiss/schemas}sequencialItem').text = str(idx_env + 1)
+            
+            # NOVAS TAGS OBRIGATÓRIAS POR ITEM
+            ET.SubElement(det, '{http://www.ans.gov.br/padroes/tiss/schemas}dataRealizacao').text = dt_exec
+            
             ptag = ET.SubElement(det, '{http://www.ans.gov.br/padroes/tiss/schemas}procedimento')
             ET.SubElement(ptag, '{http://www.ans.gov.br/padroes/tiss/schemas}codigoTabela').text = proc_dados.find('.//ans:codigoTabela', ns).text
             ET.SubElement(ptag, '{http://www.ans.gov.br/padroes/tiss/schemas}codigoProcedimento').text = cod_env
             ET.SubElement(ptag, '{http://www.ans.gov.br/padroes/tiss/schemas}descricaoProcedimento').text = proc_dados.find('.//ans:descricaoProcedimento', ns).text
             
             ET.SubElement(det, '{http://www.ans.gov.br/padroes/tiss/schemas}valorInformado').text = v_inf
+            ET.SubElement(det, '{http://www.ans.gov.br/padroes/tiss/schemas}qtdExecutada').text = qtd_exec
             ET.SubElement(det, '{http://www.ans.gov.br/padroes/tiss/schemas}valorProcessado').text = v_proc
             ET.SubElement(det, '{http://www.ans.gov.br/padroes/tiss/schemas}valorLiberado').text = v_lib
 
@@ -171,7 +178,7 @@ def processar_xmls(envio_file, retorno_file):
             t_g_inf += float(v_inf)
             t_g_lib += float(v_lib)
 
-        # TOTAIS DA GUIA (MANTENDO ESTRUTURA COMPLETA)
+        # TOTAIS DA GUIA
         ET.SubElement(rel_guia, '{http://www.ans.gov.br/padroes/tiss/schemas}valorInformadoGuia').text = f"{t_g_inf:.2f}"
         ET.SubElement(rel_guia, '{http://www.ans.gov.br/padroes/tiss/schemas}valorProcessadoGuia').text = f"{t_g_inf:.2f}"
         ET.SubElement(rel_guia, '{http://www.ans.gov.br/padroes/tiss/schemas}valorLiberadoGuia').text = f"{t_g_lib:.2f}"
@@ -180,7 +187,7 @@ def processar_xmls(envio_file, retorno_file):
         total_inf_geral += t_g_inf
         total_lib_geral += t_g_lib
 
-    # TOTAIS DO PROTOCOLO E GERAL (MANTENDO ESTRUTURA COMPLETA)
+    # TOTAIS DO PROTOCOLO E GERAL
     for b, s in [(protocolo, "Protocolo"), (demonstrativo, "Geral")]:
         ET.SubElement(b, f'{{http://www.ans.gov.br/padroes/tiss/schemas}}valorInformado{s}').text = f"{total_inf_geral:.2f}"
         ET.SubElement(b, f'{{http://www.ans.gov.br/padroes/tiss/schemas}}valorProcessado{s}').text = f"{total_inf_geral:.2f}"
