@@ -1,5 +1,6 @@
 import xml.etree.ElementTree as ET
 from xml.dom import minidom
+from io import BytesIO
 
 # --- CONSTANTES DE NEGÓCIO ---
 NS = {'ans': 'http://www.ans.gov.br/padroes/tiss/schemas'}
@@ -8,8 +9,7 @@ CODIGOS_GLOSA_PADRAO = ['1099', '1199', '1999', '3099']
 
 def extrair_metadados_para_site(retorno_file):
     """
-    Função para ler o retorno e listar Lotes e Guias para os checkboxes do site.
-    Retorna um dicionário: { 'Lote_ID': [Guia1, Guia2, ...] }
+    Função para alimentar os checkboxes do site.
     """
     try:
         tree = ET.parse(retorno_file)
@@ -27,22 +27,25 @@ def extrair_metadados_para_site(retorno_file):
     except:
         return {}
 
-def processar_xml_selecionado(envio_file, retorno_file, guias_selecionadas):
+def processar_xmls(envio_file, retorno_file, guias_selecionadas=None):
     """
-    Gera o XML final contendo apenas as guias marcadas no site.
+    Gera o XML final filtrado. Se guias_selecionadas for None, processa tudo.
     """
     ET.register_namespace('ans', "http://www.ans.gov.br/padroes/tiss/schemas")
     ET.register_namespace('xsi', "http://www.w3.org/2001/XMLSchema-instance")
 
-    tree_ret = ET.parse(retorno_file)
-    root_ret = tree_ret.getroot()
-    tree_env = ET.parse(envio_file)
-    root_env = tree_env.getroot()
+    try:
+        tree_ret = ET.parse(retorno_file)
+        root_ret = tree_ret.getroot()
+        tree_env = ET.parse(envio_file)
+        root_env = tree_env.getroot()
+    except Exception as e:
+        return f"Erro ao ler arquivos: {e}"
 
     reg_ans_el = root_ret.find('.//ans:registroANS', NS)
     is_amazonia = reg_ans_el is not None and reg_ans_el.text == '419052'
 
-    # 1. MAPEAMENTO COMPLETO DO RETORNO (Multi-Chave)
+    # 1. MAPEAMENTO DO RETORNO
     mapa_retorno = {}
     for relacao in root_ret.findall('.//ans:relacaoGuias', NS):
         n_guia_prest = relacao.find('.//ans:numeroGuiaPrestador', NS)
@@ -77,9 +80,7 @@ def processar_xml_selecionado(envio_file, retorno_file, guias_selecionadas):
         if senha is not None: mapa_retorno[f"SENH_{senha.text.strip()}"] = dados
 
     # 2. CONSTRUÇÃO DO NOVO XML
-    novo_root = ET.Element('{http://www.ans.gov.br/padroes/tiss/schemas}mensagemTISS', {
-        '{http://www.w3.org/2001/XMLSchema-instance}schemaLocation': 'http://www.ans.gov.br/padroes/tiss/schemas http://www.ans.gov.br/padroes/tiss/schemas/tissV4_01_00.xsd'
-    })
+    novo_root = ET.Element('{http://www.ans.gov.br/padroes/tiss/schemas}mensagemTISS')
     
     if (cab := root_ret.find('ans:cabecalho', NS)) is not None: novo_root.append(cab)
     op_para_prest = ET.SubElement(novo_root, '{http://www.ans.gov.br/padroes/tiss/schemas}operadoraParaPrestador')
@@ -96,10 +97,9 @@ def processar_xml_selecionado(envio_file, retorno_file, guias_selecionadas):
         el = root_ret.find(f'.//ans:{tag}', NS)
         ET.SubElement(protocolo, f'{{http://www.ans.gov.br/padroes/tiss/schemas}}{tag}').text = el.text if el is not None else ""
 
-    total_inf_final, total_lib_final = 0.0, 0.0
-    processadas = set()
+    total_inf_final, total_lib_final, processadas = 0.0, 0.0, set()
 
-    # 3. FILTRAGEM E PROCESSAMENTO POR SELEÇÃO DO USUÁRIO
+    # 3. PROCESSAMENTO
     for elemento in root_env.findall('.//*', NS):
         tag_name = elemento.tag.split('}')[-1]
         if 'guia' not in tag_name.lower() or any(x in tag_name.lower() for x in ['guiastiss', 'loteguias', 'relacaoguias']):
@@ -107,16 +107,17 @@ def processar_xml_selecionado(envio_file, retorno_file, guias_selecionadas):
             
         n_guia_env = elemento.find('.//ans:numeroGuiaPrestador', NS).text.strip() if elemento.find('.//ans:numeroGuiaPrestador', NS) is not None else ""
         
-        # FILTRO DE SELEÇÃO DO SITE
-        if n_guia_env not in guias_selecionadas or n_guia_env in processadas:
+        # FILTRO DE SELEÇÃO: Se passou uma lista e a guia não está nela, pula.
+        if guias_selecionadas is not None and n_guia_env not in guias_selecionadas:
             continue
+        if n_guia_env in processadas: continue
 
+        # Identificação
         n_oper_env = elemento.find('.//ans:numeroGuiaOperadora', NS).text.strip() if elemento.find('.//ans:numeroGuiaOperadora', NS) is not None else ""
         cart_env = elemento.find('.//ans:numeroCarteira', NS).text.strip() if elemento.find('.//ans:numeroCarteira', NS) is not None else ""
         senha_el = elemento.find('.//ans:senha', NS) or elemento.find('.//ans:dadosAutorizacao/ans:senha', NS)
         senha_env = senha_el.text.strip() if senha_el is not None and senha_el.text else ""
 
-        # Busca hierárquica no mapa
         res_guia = (mapa_retorno.get(f"GUIA_{n_guia_env}") or mapa_retorno.get(f"OPER_{n_oper_env}") or 
                     mapa_retorno.get(f"SENH_{senha_env}") or mapa_retorno.get(f"CART_{cart_env}"))
         
@@ -126,58 +127,46 @@ def processar_xml_selecionado(envio_file, retorno_file, guias_selecionadas):
         m, itens_ret = res_guia['meta'], res_guia['itens']
         rel_guia = ET.SubElement(protocolo, '{http://www.ans.gov.br/padroes/tiss/schemas}relacaoGuias')
         
-        # Cabeçalho da Guia
         ET.SubElement(rel_guia, '{http://www.ans.gov.br/padroes/tiss/schemas}numeroGuiaPrestador').text = n_guia_env
         ET.SubElement(rel_guia, '{http://www.ans.gov.br/padroes/tiss/schemas}numeroGuiaOperadora').text = n_oper_env if n_oper_env else m['numeroGuiaOperadora']
         ET.SubElement(rel_guia, '{http://www.ans.gov.br/padroes/tiss/schemas}senha').text = senha_env if senha_env else m.get('senha', "")
         ET.SubElement(rel_guia, '{http://www.ans.gov.br/padroes/tiss/schemas}numeroCarteira').text = cart_env
 
-        # Lógica de Datas e Horas (Incluindo Internação Amazônia)
+        # Datas
+        d_ini = m.get('dataInicioFat', "")
         if tag_name == 'guiaResumoInternacao' and is_amazonia:
-            d_ini = elemento.find('.//ans:dataInicioFaturamento', NS).text if elemento.find('.//ans:dataInicioFaturamento', NS) is not None else m.get('dataInicioFat', "")
-            h_ini = elemento.find('.//ans:horaInicioFaturamento', NS).text if elemento.find('.//ans:horaInicioFaturamento', NS) is not None else m.get('horaInicioFat', "")
-            d_fim = elemento.find('.//ans:dataFinalFaturamento', NS).text if elemento.find('.//ans:dataFinalFaturamento', NS) is not None else d_ini
-            h_fim = elemento.find('.//ans:horaFinalFaturamento', NS).text if elemento.find('.//ans:horaFinalFaturamento', NS) is not None else m.get('horaFimFat', "")
-        else:
-            d_ini, d_fim, h_ini, h_fim = m.get('dataInicioFat', ""), m.get('dataInicioFat', ""), "00:00:00", "00:00:00"
+            d_ini_env = elemento.find('.//ans:dataInicioFaturamento', NS)
+            d_ini = d_ini_env.text if d_ini_env is not None else d_ini
 
         ET.SubElement(rel_guia, '{http://www.ans.gov.br/padroes/tiss/schemas}dataInicioFat').text = d_ini
-        ET.SubElement(rel_guia, '{http://www.ans.gov.br/padroes/tiss/schemas}horaInicioFat').text = h_ini
-        ET.SubElement(rel_guia, '{http://www.ans.gov.br/padroes/tiss/schemas}dataFimFat').text = d_fim
-        ET.SubElement(rel_guia, '{http://www.ans.gov.br/padroes/tiss/schemas}horaFimFat').text = h_fim
+        ET.SubElement(rel_guia, '{http://www.ans.gov.br/padroes/tiss/schemas}horaInicioFat').text = "00:00:00"
+        ET.SubElement(rel_guia, '{http://www.ans.gov.br/padroes/tiss/schemas}dataFimFat').text = d_ini
+        ET.SubElement(rel_guia, '{http://www.ans.gov.br/padroes/tiss/schemas}horaFimFat').text = "00:00:00"
         ET.SubElement(rel_guia, '{http://www.ans.gov.br/padroes/tiss/schemas}situacaoGuia').text = m.get('situacaoGuia', "")
 
         t_g_inf, t_g_lib = 0.0, 0.0
         itens_env = elemento.findall('.//ans:procedimento', NS) if tag_name == 'guiaConsulta' else (elemento.findall('.//ans:procedimentoExecutado', NS) + elemento.findall('.//ans:despesa', NS))
 
         for idx, i_env in enumerate(itens_env):
-            # Extração de valores e procedimentos do envio
-            if tag_name == 'guiaConsulta':
-                v_el, dt_i, p_env = i_env.find('.//ans:valorProcedimento', NS), elemento.find('.//ans:dataAtendimento', NS), i_env
-            else:
-                srv = i_env.find('.//ans:servicosExecutados', NS) if i_env.tag.endswith('despesa') else i_env
-                v_el, dt_i = srv.find('.//ans:valorTotal', NS), srv.find('.//ans:dataExecucao', NS)
-                p_env = srv.find('.//ans:procedimento', NS) if srv.find('.//ans:procedimento', NS) is not None else srv
-
-            v_env_s = f"{float(v_el.text):.2f}" if (v_el is not None and v_el.text) else "0.00"
-            dt_item = dt_i.text if dt_i is not None else d_ini
+            # Lógica simplificada de extração de valores do envio
+            v_total_el = i_env.find('.//ans:valorTotal', NS) or i_env.find('.//ans:valorProcedimento', NS)
+            v_env_s = f"{float(v_total_el.text):.2f}" if (v_total_el is not None and v_total_el.text) else "0.00"
             
-            # Pareamento de Item
             match = next((it for it in itens_ret if not it['usado'] and it['v_inf'] == v_env_s), None)
             if match: match['usado'] = True
 
             v_inf = match['v_inf'] if match else v_env_s
             v_lib = match['v_lib'] if match else "0.00"
-            desc = match['desc'] if (match and match['desc']) else (p_env.find('.//ans:descricaoProcedimento', NS).text if p_env.find('.//ans:descricaoProcedimento', NS) is not None else "")
 
             det = ET.SubElement(rel_guia, '{http://www.ans.gov.br/padroes/tiss/schemas}detalhesGuia')
             ET.SubElement(det, '{http://www.ans.gov.br/padroes/tiss/schemas}sequencialItem').text = str(idx + 1)
-            ET.SubElement(det, '{http://www.ans.gov.br/padroes/tiss/schemas}dataRealizacao').text = dt_item
+            ET.SubElement(det, '{http://www.ans.gov.br/padroes/tiss/schemas}dataRealizacao').text = d_ini
             
             p_tag = ET.SubElement(det, '{http://www.ans.gov.br/padroes/tiss/schemas}procedimento')
-            ET.SubElement(p_tag, '{http://www.ans.gov.br/padroes/tiss/schemas}codigoTabela').text = p_env.find('.//ans:codigoTabela', NS).text
-            ET.SubElement(p_tag, '{http://www.ans.gov.br/padroes/tiss/schemas}codigoProcedimento').text = p_env.find('.//ans:codigoProcedimento', NS).text
-            ET.SubElement(p_tag, '{http://www.ans.gov.br/padroes/tiss/schemas}descricaoProcedimento').text = desc
+            p_env = i_env.find('.//ans:procedimento', NS) or i_env
+            ET.SubElement(p_tag, '{http://www.ans.gov.br/padroes/tiss/schemas}codigoTabela').text = p_env.find('.//ans:codigoTabela', NS).text if p_env.find('.//ans:codigoTabela', NS) is not None else "00"
+            ET.SubElement(p_tag, '{http://www.ans.gov.br/padroes/tiss/schemas}codigoProcedimento').text = p_env.find('.//ans:codigoProcedimento', NS).text if p_env.find('.//ans:codigoProcedimento', NS) is not None else "00"
+            ET.SubElement(p_tag, '{http://www.ans.gov.br/padroes/tiss/schemas}descricaoProcedimento').text = match['desc'] if (match and match['desc']) else "PROCEDIMENTO"
             
             ET.SubElement(det, '{http://www.ans.gov.br/padroes/tiss/schemas}valorInformado').text = v_inf
             ET.SubElement(det, '{http://www.ans.gov.br/padroes/tiss/schemas}qtdExecutada').text = "1.00"
@@ -185,20 +174,16 @@ def processar_xml_selecionado(envio_file, retorno_file, guias_selecionadas):
             ET.SubElement(det, '{http://www.ans.gov.br/padroes/tiss/schemas}valorLiberado').text = v_lib
 
             # Glosas
-            tipos_vistos = set()
             for g in (match['glosas'] if match else []):
                 t = g['tipo']
                 if is_amazonia:
                     t = '1705' if t in CODIGOS_GLOSA_PARA_1705 else ('1801' if t in CODIGOS_GLOSA_PADRAO else t)
-                if t not in tipos_vistos:
-                    rg = ET.SubElement(det, '{http://www.ans.gov.br/padroes/tiss/schemas}relacaoGlosa')
-                    ET.SubElement(rg, '{http://www.ans.gov.br/padroes/tiss/schemas}valorGlosa').text = g['valor']
-                    ET.SubElement(rg, '{http://www.ans.gov.br/padroes/tiss/schemas}tipoGlosa').text = t
-                    tipos_vistos.add(t)
+                rg = ET.SubElement(det, '{http://www.ans.gov.br/padroes/tiss/schemas}relacaoGlosa')
+                ET.SubElement(rg, '{http://www.ans.gov.br/padroes/tiss/schemas}valorGlosa').text = g['valor']
+                ET.SubElement(rg, '{http://www.ans.gov.br/padroes/tiss/schemas}tipoGlosa').text = t
 
             t_g_inf += float(v_inf); t_g_lib += float(v_lib)
 
-        # Totais da Guia
         ET.SubElement(rel_guia, '{http://www.ans.gov.br/padroes/tiss/schemas}valorInformadoGuia').text = f"{t_g_inf:.2f}"
         ET.SubElement(rel_guia, '{http://www.ans.gov.br/padroes/tiss/schemas}valorProcessadoGuia').text = f"{t_g_inf:.2f}"
         ET.SubElement(rel_guia, '{http://www.ans.gov.br/padroes/tiss/schemas}valorLiberadoGuia').text = f"{t_g_lib:.2f}"
@@ -206,7 +191,7 @@ def processar_xml_selecionado(envio_file, retorno_file, guias_selecionadas):
         
         total_inf_final += t_g_inf; total_lib_final += t_g_lib
 
-    # 4. TOTAIS DO PROTOCOLO E GERAL (RECALCULADOS COM O FILTRO)
+    # 4. TOTAIS FINAIS RECALCULADOS
     for b, s in [(protocolo, "Protocolo"), (demonstrativo, "Geral")]:
         ET.SubElement(b, f'{{http://www.ans.gov.br/padroes/tiss/schemas}}valorInformado{s}').text = f"{total_inf_final:.2f}"
         ET.SubElement(b, f'{{http://www.ans.gov.br/padroes/tiss/schemas}}valorProcessado{s}').text = f"{total_inf_final:.2f}"
@@ -216,4 +201,5 @@ def processar_xml_selecionado(envio_file, retorno_file, guias_selecionadas):
     epilogo = ET.SubElement(novo_root, '{http://www.ans.gov.br/padroes/tiss/schemas}epilogo')
     ET.SubElement(epilogo, '{http://www.ans.gov.br/padroes/tiss/schemas}hash').text = "0" * 32
     
-    return minidom.parseString(ET.tostring(novo_root, 'iso-8859-1')).toprettyxml(indent="  ", encoding='ISO-8859-1')
+    xml_str = ET.tostring(novo_root, encoding='ISO-8859-1')
+    return minidom.parseString(xml_str).toprettyxml(indent="  ", encoding='ISO-8859-1')
