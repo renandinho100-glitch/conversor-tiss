@@ -1,8 +1,6 @@
 import xml.etree.ElementTree as ET
 from io import BytesIO
-from collections import deque
 from xml.dom import minidom
-import re
 
 def processar_xmls(envio_file, retorno_file):
     ns = {'ans': 'http://www.ans.gov.br/padroes/tiss/schemas'}
@@ -21,7 +19,10 @@ def processar_xmls(envio_file, retorno_file):
         return f"Erro ao ler arquivos XML: {e}"
 
     reg_ans_el = root_ret.find('.//ans:registroANS', ns)
-    is_amazonia = reg_ans_el is not None and reg_ans_el.text == '419052'
+    reg_ans_texto = reg_ans_el.text if reg_ans_el is not None else ""
+    
+    is_amazonia = reg_ans_texto == '419052'
+    is_unimed = reg_ans_texto == '303976'
 
     # 1. MAPEAMENTO DO RETORNO
     mapa_retorno = {}
@@ -119,20 +120,18 @@ def processar_xmls(envio_file, retorno_file):
         ET.SubElement(rel_guia, '{http://www.ans.gov.br/padroes/tiss/schemas}senha').text = senha_env if senha_env else m.get('senha', "")
         ET.SubElement(rel_guia, '{http://www.ans.gov.br/padroes/tiss/schemas}numeroCarteira').text = carteira_env
         
-        # --- REGRA DE DATAS E HORAS ---
-        if tag_name == 'guiaResumoInternacao' and is_amazonia:
-            # Para Internação Amazônia, prioriza o que está no envio
-            d_ini = elemento.find('.//ans:dataInicioFaturamento', ns)
-            h_ini = elemento.find('.//ans:horaInicioFaturamento', ns)
-            d_fim = elemento.find('.//ans:dataFinalFaturamento', ns)
-            h_fim = elemento.find('.//ans:horaFinalFaturamento', ns)
+        # --- LÓGICA DE DATAS (AJUSTE SADT E INTERNAÇÃO) ---
+        if tag_name in ['guiaResumoInternacao', 'guiaSP-SADT']:
+            d_ini = elemento.find('.//ans:dataInicioFaturamento', ns) or elemento.find('.//ans:dataAtendimento', ns) or elemento.find('.//ans:dataExecucao', ns)
+            h_ini = elemento.find('.//ans:horaInicioFaturamento', ns) or elemento.find('.//ans:horaAtendimento', ns)
+            d_fim = elemento.find('.//ans:dataFinalFaturamento', ns) or elemento.find('.//ans:dataFimFaturamento', ns)
+            h_fim = elemento.find('.//ans:horaFinalFaturamento', ns) or elemento.find('.//ans:horaFimFaturamento', ns)
             
             data_ini_val = d_ini.text if d_ini is not None else m.get('dataInicioFat', "")
-            hora_ini_val = h_ini.text if h_ini is not None else m.get('horaInicioFat', "")
+            hora_ini_val = h_ini.text if h_ini is not None else m.get('horaInicioFat', "00:00:00")
             data_fim_val = d_fim.text if d_fim is not None else m.get('dataFimFat', data_ini_val)
-            hora_fim_val = h_fim.text if h_fim is not None else m.get('horaFimFat', "")
+            hora_fim_val = h_fim.text if h_fim is not None else m.get('horaFimFat', "00:00:00")
         else:
-            # Regras padrão para outras guias
             data_ini_val = m.get('dataInicioFat', "")
             data_fim_val = m.get('dataInicioFat', "")
             hora_ini_val = "00:00:00"
@@ -160,7 +159,8 @@ def processar_xmls(envio_file, retorno_file):
             else:
                 servico = item_env.find('.//ans:servicosExecutados', ns) if item_env.tag.endswith('despesa') else item_env
                 v_total_el = servico.find('.//ans:valorTotal', ns)
-                dt_item = servico.find('.//ans:dataExecucao', ns).text if servico.find('.//ans:dataExecucao', ns) is not None else data_ini_val
+                dt_item_el = servico.find('.//ans:dataExecucao', ns) or servico.find('.//ans:dataRealizacao', ns)
+                dt_item = dt_item_el.text if dt_item_el is not None else data_ini_val
                 proc_env = servico.find('.//ans:procedimento', ns) if servico.find('.//ans:procedimento', ns) is not None else servico
 
             v_env_str = f"{float(v_total_el.text):.2f}" if (v_total_el is not None and v_total_el.text) else "0.00"
@@ -188,8 +188,8 @@ def processar_xmls(envio_file, retorno_file):
             ET.SubElement(det, '{http://www.ans.gov.br/padroes/tiss/schemas}dataRealizacao').text = dt_item
             
             ptag = ET.SubElement(det, '{http://www.ans.gov.br/padroes/tiss/schemas}procedimento')
-            ET.SubElement(ptag, '{http://www.ans.gov.br/padroes/tiss/schemas}codigoTabela').text = proc_env.find('.//ans:codigoTabela', ns).text
-            ET.SubElement(ptag, '{http://www.ans.gov.br/padroes/tiss/schemas}codigoProcedimento').text = proc_env.find('.//ans:codigoProcedimento', ns).text
+            ET.SubElement(ptag, '{http://www.ans.gov.br/padroes/tiss/schemas}codigoTabela').text = proc_env.find('.//ans:codigoTabela', ns).text if proc_env.find('.//ans:codigoTabela', ns) is not None else "00"
+            ET.SubElement(ptag, '{http://www.ans.gov.br/padroes/tiss/schemas}codigoProcedimento').text = proc_env.find('.//ans:codigoProcedimento', ns).text if proc_env.find('.//ans:codigoProcedimento', ns) is not None else "00"
             ET.SubElement(ptag, '{http://www.ans.gov.br/padroes/tiss/schemas}descricaoProcedimento').text = desc_final
             
             ET.SubElement(det, '{http://www.ans.gov.br/padroes/tiss/schemas}valorInformado').text = v_inf
@@ -203,6 +203,9 @@ def processar_xmls(envio_file, retorno_file):
                 if is_amazonia:
                     if tipo in codigos_glosa_para_1705: tipo = '1705'
                     elif tipo in codigos_glosa_padrao: tipo = '1801'
+                elif is_unimed:
+                    if tipo in codigos_glosa_padrao: tipo = '1801'
+                
                 if tipo not in tipos_add:
                     rg = ET.SubElement(det, '{http://www.ans.gov.br/padroes/tiss/schemas}relacaoGlosa')
                     ET.SubElement(rg, '{http://www.ans.gov.br/padroes/tiss/schemas}valorGlosa').text = g['valor']
@@ -229,4 +232,5 @@ def processar_xmls(envio_file, retorno_file):
     epilogo = ET.SubElement(novo_root, '{http://www.ans.gov.br/padroes/tiss/schemas}epilogo')
     ET.SubElement(epilogo, '{http://www.ans.gov.br/padroes/tiss/schemas}hash').text = "0" * 32
     
-    return minidom.parseString(ET.tostring(novo_root, 'iso-8859-1')).toprettyxml(indent="  ", encoding='ISO-8859-1')
+    xml_final = ET.tostring(novo_root, 'iso-8859-1')
+    return minidom.parseString(xml_final).toprettyxml(indent="  ", encoding='ISO-8859-1')
