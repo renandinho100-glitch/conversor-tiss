@@ -46,8 +46,8 @@ def processar_xmls(envio_file, retorno_file):
             glosas = []
             for g_rel in item.findall('.//ans:relacaoGlosa', ns):
                 glosas.append({
-                    'valor': g_rel.find('ans:valorGlosa', ns).text,
-                    'tipo': g_rel.find('ans:tipoGlosa', ns).text
+                    'valor': g_rel.find('ans:valorGlosa', ns).text.strip(),
+                    'tipo': g_rel.find('ans:tipoGlosa', ns).text.strip()
                 })
 
             itens_ret_lista.append({
@@ -120,21 +120,17 @@ def processar_xmls(envio_file, retorno_file):
         ET.SubElement(rel_guia, '{http://www.ans.gov.br/padroes/tiss/schemas}senha').text = senha_env if senha_env else m.get('senha', "")
         ET.SubElement(rel_guia, '{http://www.ans.gov.br/padroes/tiss/schemas}numeroCarteira').text = carteira_env
         
-        # --- LÓGICA DE DATAS CORRIGIDA PARA AMAZÔNIA ---
+        # --- LÓGICA DE DATAS ---
         data_ini_val = ""
         if tag_name == 'guiaConsulta':
             d_ini = elemento.find('.//ans:dataAtendimento', ns)
             data_ini_val = d_ini.text if d_ini is not None else m.get('dataInicioFat', "")
+            hora_ini_val = "00:00:00" if is_amazonia else m.get('horaInicioFat', "00:00:00")
+            data_fim_val = data_ini_val if is_amazonia else m.get('dataFimFat', data_ini_val)
+            hora_fim_val = "00:00:00" if is_amazonia else m.get('horaFimFat', "00:00:00")
         else:
             d_ini = elemento.find('.//ans:dataInicioFaturamento', ns) or elemento.find('.//ans:dataExecucao', ns)
             data_ini_val = d_ini.text if d_ini is not None else m.get('dataInicioFat', "")
-
-        # Força as tags para Amazônia se for Guia de Consulta
-        if is_amazonia and tag_name == 'guiaConsulta':
-            hora_ini_val = "00:00:00"
-            data_fim_val = data_ini_val
-            hora_fim_val = "00:00:00"
-        else:
             hora_ini_val = m.get('horaInicioFat', "00:00:00")
             data_fim_val = m.get('dataFimFat', data_ini_val)
             hora_fim_val = m.get('horaFimFat', "00:00:00")
@@ -153,6 +149,7 @@ def processar_xmls(envio_file, retorno_file):
             itens_env = elemento.findall('.//ans:procedimentoExecutado', ns) + elemento.findall('.//ans:despesa', ns)
         
         for idx_env, item_env in enumerate(itens_env):
+            # ... (lógica de extração de valores do envio mantida)
             if tag_name == 'guiaConsulta':
                 v_total_el = item_env.find('.//ans:valorProcedimento', ns)
                 dt_item = data_ini_val
@@ -191,34 +188,55 @@ def processar_xmls(envio_file, retorno_file):
             ET.SubElement(det, '{http://www.ans.gov.br/padroes/tiss/schemas}valorProcessado').text = v_proc
             ET.SubElement(det, '{http://www.ans.gov.br/padroes/tiss/schemas}valorLiberado').text = v_lib
 
-            if not res and (is_unimed or is_amazonia): # Força item glosado se não houver no retorno
-                rg = ET.SubElement(det, '{http://www.ans.gov.br/padroes/tiss/schemas}relacaoGlosa')
-                ET.SubElement(rg, '{http://www.ans.gov.br/padroes/tiss/schemas}valorGlosa').text = v_inf
-                ET.SubElement(rg, '{http://www.ans.gov.br/padroes/tiss/schemas}tipoGlosa').text = '1801'
+            # --- CORREÇÃO DA SOMA COM ELIMINAÇÃO DE DUPLICATAS ---
+            valor_soma_1705 = 0.0
+            valor_soma_1801 = 0.0
+            glosas_processadas = set() # Evita somar a mesma tag duplicada
+
+            if not res and (is_unimed or is_amazonia):
+                valor_soma_1801 = float(v_inf)
             elif res:
-                tipos_add = set()
                 for g in res['glosas']:
-                    tipo = g['tipo']
-                    if is_amazonia:
-                        if tipo in codigos_glosa_para_1705: tipo = '1705'
-                        elif tipo in codigos_glosa_padrao: tipo = '1801'
-                    elif is_unimed and tipo in codigos_glosa_padrao:
-                        tipo = '1801'
+                    chave_glosa = (g['valor'], g['tipo'])
+                    if chave_glosa in glosas_processadas:
+                        continue # Pula se já processou esse par valor/tipo para este item
                     
-                    if tipo not in tipos_add:
-                        rg = ET.SubElement(det, '{http://www.ans.gov.br/padroes/tiss/schemas}relacaoGlosa')
-                        ET.SubElement(rg, '{http://www.ans.gov.br/padroes/tiss/schemas}valorGlosa').text = g['valor']
-                        ET.SubElement(rg, '{http://www.ans.gov.br/padroes/tiss/schemas}tipoGlosa').text = tipo
-                        tipos_add.add(tipo)
+                    glosas_processadas.add(chave_glosa)
+                    v_g = float(g['valor'])
+                    tipo = g['tipo']
+
+                    if is_amazonia:
+                        if tipo in codigos_glosa_para_1705: valor_soma_1705 += v_g
+                        else: valor_soma_1801 += v_g
+                    elif is_unimed:
+                        valor_soma_1801 += v_g
+
+            # Garante que a soma das glosas não ultrapasse o valor informado
+            limite = float(v_inf)
+            if (valor_soma_1705 + valor_soma_1801) > limite:
+                # Se estourar o limite (devido a erros do retorno), ajustamos para o valor total
+                if valor_soma_1705 > 0: valor_soma_1705 = limite
+                else: valor_soma_1801 = limite
+
+            # Gerar tags consolidadas
+            if valor_soma_1705 > 0:
+                rg = ET.SubElement(det, '{http://www.ans.gov.br/padroes/tiss/schemas}relacaoGlosa')
+                ET.SubElement(rg, '{http://www.ans.gov.br/padroes/tiss/schemas}valorGlosa').text = f"{valor_soma_1705:.2f}"
+                ET.SubElement(rg, '{http://www.ans.gov.br/padroes/tiss/schemas}tipoGlosa').text = '1705'
+            
+            if valor_soma_1801 > 0 and valor_soma_1705 < limite: # Só gera 1801 se ainda houver saldo
+                rg = ET.SubElement(det, '{http://www.ans.gov.br/padroes/tiss/schemas}relacaoGlosa')
+                ET.SubElement(rg, '{http://www.ans.gov.br/padroes/tiss/schemas}valorGlosa').text = f"{min(valor_soma_1801, limite - valor_soma_1705):.2f}"
+                ET.SubElement(rg, '{http://www.ans.gov.br/padroes/tiss/schemas}tipoGlosa').text = '1801'
 
             t_g_inf += float(v_inf)
             t_g_lib += float(v_lib)
 
+        # ... (restante do código de totais e epílogo mantido)
         ET.SubElement(rel_guia, '{http://www.ans.gov.br/padroes/tiss/schemas}valorInformadoGuia').text = f"{t_g_inf:.2f}"
         ET.SubElement(rel_guia, '{http://www.ans.gov.br/padroes/tiss/schemas}valorProcessadoGuia').text = f"{t_g_inf:.2f}"
         ET.SubElement(rel_guia, '{http://www.ans.gov.br/padroes/tiss/schemas}valorLiberadoGuia').text = f"{t_g_lib:.2f}"
         ET.SubElement(rel_guia, '{http://www.ans.gov.br/padroes/tiss/schemas}valorGlosaGuia').text = f"{max(0, t_g_inf - t_g_lib):.2f}"
-        
         total_inf_geral += t_g_inf
         total_lib_geral += t_g_lib
 
@@ -230,5 +248,4 @@ def processar_xmls(envio_file, retorno_file):
 
     epilogo = ET.SubElement(novo_root, '{http://www.ans.gov.br/padroes/tiss/schemas}epilogo')
     ET.SubElement(epilogo, '{http://www.ans.gov.br/padroes/tiss/schemas}hash').text = "0" * 32
-    
     return minidom.parseString(ET.tostring(novo_root, 'iso-8859-1')).toprettyxml(indent="  ", encoding='ISO-8859-1')
