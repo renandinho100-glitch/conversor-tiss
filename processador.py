@@ -22,10 +22,16 @@ def processar_xmls(envio_file, retorno_file):
     except Exception as e:
         return f"Erro ao ler arquivos XML: {e}"
 
-    # Identificação do Convênio
+    # Identificação do Convênio (Inclusão do Registro ANS da CASF)
     reg_ans_el = root_ret.find('.//ans:registroANS', ns)
     reg_ans_texto = reg_ans_el.text if reg_ans_el is not None else ""
+    
+    # Flags de Convênio para aplicação das regras de negócio existentes
     is_amazonia = reg_ans_texto == '419052'
+    is_casf = reg_ans_texto == '358754'
+    
+    # Agrupador de regras especiais (Amazônia e CASF compartilham desta mesma lógica de tratamento)
+    aplicar_regra_especial = is_amazonia or is_casf
 
     # 1. MAPEAMENTO DO RETORNO (Chaves limpas para evitar erro de zeros à esquerda)
     mapa_retorno = {}
@@ -79,7 +85,7 @@ def processar_xmls(envio_file, retorno_file):
     for tag in ['numeroLotePrestador', 'numeroProtocolo', 'dataProtocolo', 'situacaoProtocolo']:
         el = root_ret.find(f'.//ans:{tag}', ns)
         valor_final = el.text if el is not None else ""
-        if is_amazonia and tag == 'situacaoProtocolo': valor_final = "6"
+        if aplicar_regra_especial and tag == 'situacaoProtocolo': valor_final = "6"
         ET.SubElement(protocolo, f'{{http://www.ans.gov.br/padroes/tiss/schemas}}{tag}').text = valor_final
 
     total_inf_geral, total_lib_geral, processadas_guias_limpas = 0.0, 0.0, set()
@@ -120,7 +126,7 @@ def processar_xmls(envio_file, retorno_file):
         ET.SubElement(rel_guia, '{http://www.ans.gov.br/padroes/tiss/schemas}senha').text = senha_raw if senha_raw else m.get('senha', "")
         ET.SubElement(rel_guia, '{http://www.ans.gov.br/padroes/tiss/schemas}numeroCarteira').text = carteira_raw
         
-        # --- REGRA DE DATAS E HORAS UNIFICADA (CONSULTA E SADT) ---
+        # --- REGRA DE DATAS E HORAS UNIFICADA (CONSULTA E SADT / INTERNAÇÃO) ---
         if tag_name == 'guiaConsulta':
             d_ini_el = elemento.find('.//ans:dataAtendimento', ns)
         else:
@@ -128,8 +134,8 @@ def processar_xmls(envio_file, retorno_file):
 
         data_ini_val = d_ini_el.text if d_ini_el is not None else m.get('dataInicioFat', "")
         
-        # Regra: Se for Amazônia, força 00:00:00 e replica data de início no fim
-        if is_amazonia:
+        # Regra: Se for Amazônia ou CASF, força 00:00:00 e replica data de início no fim
+        if aplicar_regra_especial:
             hora_ini_val = "00:00:00"
             data_fim_val = data_ini_val
             hora_fim_val = "00:00:00"
@@ -142,7 +148,7 @@ def processar_xmls(envio_file, retorno_file):
         ET.SubElement(rel_guia, '{http://www.ans.gov.br/padroes/tiss/schemas}horaInicioFat').text = hora_ini_val
         ET.SubElement(rel_guia, '{http://www.ans.gov.br/padroes/tiss/schemas}dataFimFat').text = data_fim_val
         ET.SubElement(rel_guia, '{http://www.ans.gov.br/padroes/tiss/schemas}horaFimFat').text = hora_fim_val
-        ET.SubElement(rel_guia, '{http://www.ans.gov.br/padroes/tiss/schemas}situacaoGuia').text = "6" if is_amazonia else m.get('situacaoGuia', "")
+        ET.SubElement(rel_guia, '{http://www.ans.gov.br/padroes/tiss/schemas}situacaoGuia').text = "6" if aplicar_regra_especial else m.get('situacaoGuia', "")
 
         t_g_inf, t_g_lib = 0.0, 0.0
         itens_env = elemento.findall('.//ans:procedimento', ns) if tag_name == 'guiaConsulta' else (elemento.findall('.//ans:procedimentoExecutado', ns) + elemento.findall('.//ans:despesa', ns))
@@ -182,7 +188,9 @@ def processar_xmls(envio_file, retorno_file):
             if valor_glosa_final > 0:
                 rg = ET.SubElement(det, '{http://www.ans.gov.br/padroes/tiss/schemas}relacaoGlosa')
                 ET.SubElement(rg, '{http://www.ans.gov.br/padroes/tiss/schemas}valorGlosa').text = f"{valor_glosa_final:.2f}"
-                ET.SubElement(rg, '{http://www.ans.gov.br/padroes/tiss/schemas}tipoGlosa').text = '1705' if is_amazonia else '1801'
+                # Mapeamento do tipo de glosa condicionado ao convênio ativo
+                rg_tipo = '1705' if aplicar_regra_especial else '1801'
+                ET.SubElement(rg, '{http://www.ans.gov.br/padroes/tiss/schemas}tipoGlosa').text = rg_tipo
 
             t_g_inf += v_inf_f
             t_g_lib += v_lib_f
