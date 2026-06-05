@@ -60,11 +60,16 @@ def processar_xmls(envio_file, retorno_file):
             v_inf_raw = item.find('.//ans:valorInformado', ns).text if item.find('.//ans:valorInformado', ns) is not None else "0.00"
             v_lib_raw = item.find('.//ans:valorLiberado', ns).text if item.find('.//ans:valorLiberado', ns) is not None else "0.00"
             
+            # Captura o tipo de glosa original enviado pela operadora, se houver
+            glosa_el = item.find('.//ans:relacaoGlosa/ans:tipoGlosa', ns)
+            glosa_original = glosa_el.text.strip() if (glosa_el is not None and glosa_el.text) else ""
+            
             itens_ret_lista.append({
                 'cod_ret': p_elem.find('ans:codigoProcedimento', ns).text if p_elem is not None else "",
                 'desc_ret': p_elem.find('ans:descricaoProcedimento', ns).text if p_elem is not None else "PROCEDIMENTO",
                 'v_inf': f"{float(v_inf_raw):.2f}",
                 'v_lib': f"{float(v_lib_raw):.2f}",
+                'glosa_original': glosa_original,
                 'usado': False 
             })
         
@@ -134,12 +139,12 @@ def processar_xmls(envio_file, retorno_file):
         ET.SubElement(rel_guia, '{http://www.ans.gov.br/padroes/tiss/schemas}senha').text = senha_raw if senha_raw else m.get('senha', "")
         ET.SubElement(rel_guia, '{http://www.ans.gov.br/padroes/tiss/schemas}numeroCarteira').text = carteira_raw
         
-        # --- REGRA DE DATAS E HORAS CRÍTICA (REVISADA PARA CONSULTA CASF/UNIMED) ---
+        # --- REGRA DE DATAS E HORAS CRÍTICA ---
         if tag_name == 'guiaConsulta':
             d_ini_el = elemento.find('.//ans:dataAtendimento', ns)
             h_ini_el = elemento.find('.//ans:horaAtendimento', ns)
             d_fim_el = d_ini_el
-            h_fim_el = h_ini_el  # Consulta não possui fim nativo no envio, espelha o início
+            h_fim_el = h_ini_el
         else:
             d_ini_el = elemento.find('.//ans:dataInicioFaturamento', ns) or elemento.find('.//ans:dataExecucao', ns)
             h_ini_el = elemento.find('.//ans:horaInicioFaturamento', ns) or elemento.find('.//ans:horaInicial', ns)
@@ -163,7 +168,6 @@ def processar_xmls(envio_file, retorno_file):
             hora_ini_val = limpar_hora(envio_h_ini if envio_h_ini else m.get('horaInicioFat', "00:00:00"))
             data_fim_val = d_fim_el.text if (d_fim_el is not None and d_fim_el.text) else m.get('dataFimFat', data_ini_val)
             
-            # Se for Consulta, força o fim igual ao início tratado. Se for outra guia, avalia o envio_h_fim.
             if tag_name == 'guiaConsulta':
                 hora_fim_val = hora_ini_val
             else:
@@ -207,13 +211,20 @@ def processar_xmls(envio_file, retorno_file):
             ET.SubElement(det, '{http://www.ans.gov.br/padroes/tiss/schemas}valorProcessado').text = v_inf
             ET.SubElement(det, '{http://www.ans.gov.br/padroes/tiss/schemas}valorLiberado').text = v_lib
 
-            # GLOSA ÚNICA POR SUBTRAÇÃO
+            # --- REGRA DE PRESERVAÇÃO DE GLOSA OPERADORA (NATIVA DA CASF) ---
             v_inf_f, v_lib_f = float(v_inf), float(v_lib)
             valor_glosa_final = round(v_inf_f - v_lib_f, 2)
             if valor_glosa_final > 0:
                 rg = ET.SubElement(det, '{http://www.ans.gov.br/padroes/tiss/schemas}relacaoGlosa')
                 ET.SubElement(rg, '{http://www.ans.gov.br/padroes/tiss/schemas}valorGlosa').text = f"{valor_glosa_final:.2f}"
-                rg_tipo = '1705' if is_amazonia else '1801'
+                
+                # Se o item mapeado no retorno já possuir uma glosa definida pela operadora, preserva ela.
+                if res and res.get('glosa_original'):
+                    rg_tipo = res['glosa_original']
+                else:
+                    # Fallback padrão caso a diferença matemática aconteça em um item sem glosa explícita no retorno
+                    rg_tipo = '1705' if is_amazonia else '1801'
+                    
                 ET.SubElement(rg, '{http://www.ans.gov.br/padroes/tiss/schemas}tipoGlosa').text = rg_tipo
 
             t_g_inf += v_inf_f
