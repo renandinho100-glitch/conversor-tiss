@@ -134,36 +134,40 @@ def processar_xmls(envio_file, retorno_file):
         ET.SubElement(rel_guia, '{http://www.ans.gov.br/padroes/tiss/schemas}senha').text = senha_raw if senha_raw else m.get('senha', "")
         ET.SubElement(rel_guia, '{http://www.ans.gov.br/padroes/tiss/schemas}numeroCarteira').text = carteira_raw
         
-        # --- REGRA DE DATAS E HORAS CRÍTICA (REVISADA) ---
-        # 1. Identificar tags de Data e Hora no XML de Envio
+        # --- REGRA DE DATAS E HORAS CRÍTICA (REVISADA PARA CONSULTA CASF/UNIMED) ---
         if tag_name == 'guiaConsulta':
             d_ini_el = elemento.find('.//ans:dataAtendimento', ns)
-            h_ini_el = elemento.find('.//ans:horaAtendimento', ns) # Não costuma haver fim em consulta, herda início
+            h_ini_el = elemento.find('.//ans:horaAtendimento', ns)
             d_fim_el = d_ini_el
-            h_fim_el = h_ini_el
+            h_fim_el = h_ini_el  # Consulta não possui fim nativo no envio, espelha o início
         else:
             d_ini_el = elemento.find('.//ans:dataInicioFaturamento', ns) or elemento.find('.//ans:dataExecucao', ns)
             h_ini_el = elemento.find('.//ans:horaInicioFaturamento', ns) or elemento.find('.//ans:horaInicial', ns)
             d_fim_el = elemento.find('.//ans:dataFinalFaturamento', ns) or elemento.find('.//ans:dataFimFaturamento', ns) or d_ini_el
             h_fim_el = elemento.find('.//ans:horaFinalFaturamento', ns) or elemento.find('.//ans:horaFinal', ns)
 
-        # 2. Extração dos Valores de Data
+        # Extração dos Valores de Data
         data_ini_val = d_ini_el.text if d_ini_el is not None else m.get('dataInicioFat', "")
         
-        # 3. Extração e Tratamento dos Valores de Hora (Priorizando Envio, fallback Limpo para Retorno)
+        # Extração das horas cruas do Envio
         envio_h_ini = h_ini_el.text if h_ini_el is not None else ""
         envio_h_fim = h_fim_el.text if h_fim_el is not None else ""
         
-        # Se for Amazônia, força o padrão regulamentar deles (00:00:00)
+        # Se for Amazônia, força o padrão regulamentar (00:00:00) em tudo
         if is_amazonia:
             hora_ini_val = "00:00:00"
             data_fim_val = data_ini_val
             hora_fim_val = "00:00:00"
         else:
-            # Prioriza a hora do envio. Se não achar, pega a do retorno e passa pelo filtro 'limpar_hora'
+            # CASF e Unimed: Prioriza Envio com tratamento de caracteres extras
             hora_ini_val = limpar_hora(envio_h_ini if envio_h_ini else m.get('horaInicioFat', "00:00:00"))
             data_fim_val = d_fim_el.text if (d_fim_el is not None and d_fim_el.text) else m.get('dataFimFat', data_ini_val)
-            hora_fim_val = limpar_hora(envio_h_fim if envio_h_fim else m.get('horaFimFat', hora_ini_val))
+            
+            # Se for Consulta, força o fim igual ao início tratado. Se for outra guia, avalia o envio_h_fim.
+            if tag_name == 'guiaConsulta':
+                hora_fim_val = hora_ini_val
+            else:
+                hora_fim_val = limpar_hora(envio_h_fim if envio_h_fim else m.get('horaFimFat', hora_ini_val))
 
         ET.SubElement(rel_guia, '{http://www.ans.gov.br/padroes/tiss/schemas}dataInicioFat').text = data_ini_val
         ET.SubElement(rel_guia, '{http://www.ans.gov.br/padroes/tiss/schemas}horaInicioFat').text = hora_ini_val
