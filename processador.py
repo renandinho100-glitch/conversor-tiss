@@ -246,19 +246,25 @@ def processar_xmls(envio_file, retorno_file):
             ET.SubElement(det, '{http://www.ans.gov.br/padroes/tiss/schemas}valorProcessado').text = v_inf
             ET.SubElement(det, '{http://www.ans.gov.br/padroes/tiss/schemas}valorLiberado').text = v_lib
 
-            # --- REGRA DE PRESERVAÇÃO DE GLOSA OPERADORA (NATIVA DA CASF) ---
+            # --- REGRA DE PRESERVAÇÃO E SUBSTUTUIÇÃO DE GLOSA ---
             v_inf_f, v_lib_f = float(v_inf), float(v_lib)
             valor_glosa_final = round(v_inf_f - v_lib_f, 2)
             if valor_glosa_final > 0:
                 rg = ET.SubElement(det, '{http://www.ans.gov.br/padroes/tiss/schemas}relacaoGlosa')
                 ET.SubElement(rg, '{http://www.ans.gov.br/padroes/tiss/schemas}valorGlosa').text = f"{valor_glosa_final:.2f}"
                 
-                # Se o item mapeado no retorno já possuir uma glosa definida pela operadora, preserva ela.
+                # Seleciona o código base
                 if res and res.get('glosa_original'):
                     rg_tipo = res['glosa_original']
                 else:
-                    # Fallback padrão caso a diferença matemática aconteça em um item sem glosa explícita no retorno
                     rg_tipo = '1705' if is_amazonia else '1801'
+                
+                # --- DE-PARA DE GLOSAS (EXCLUSIVO SAÚDE AMAZÔNIA) ---
+                if is_amazonia:
+                    if rg_tipo == '1799':
+                        rg_tipo = '1713'
+                    elif rg_tipo == '9918':
+                        rg_tipo = '1702'
                     
                 ET.SubElement(rg, '{http://www.ans.gov.br/padroes/tiss/schemas}tipoGlosa').text = rg_tipo
 
