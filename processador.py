@@ -64,7 +64,7 @@ def processar_xmls(envio_file, retorno_file):
             v_inf_raw = item.find('.//ans:valorInformado', ns).text if item.find('.//ans:valorInformado', ns) is not None else "0.00"
             v_lib_raw = item.find('.//ans:valorLiberado', ns).text if item.find('.//ans:valorLiberado', ns) is not None else "0.00"
             
-            # Captura o tipo de glosa original enviado pela operadora, se houver
+            # Captura a tag ans:tipoGlosa original enviada pela operadora
             glosa_el = item.find('.//ans:relacaoGlosa/ans:tipoGlosa', ns)
             glosa_original = glosa_el.text.strip() if (glosa_el is not None and glosa_el.text) else ""
             
@@ -246,26 +246,27 @@ def processar_xmls(envio_file, retorno_file):
             ET.SubElement(det, '{http://www.ans.gov.br/padroes/tiss/schemas}valorProcessado').text = v_inf
             ET.SubElement(det, '{http://www.ans.gov.br/padroes/tiss/schemas}valorLiberado').text = v_lib
 
-            # --- REGRA DE PRESERVAÇÃO E SUBSTUTUIÇÃO DE GLOSA ---
+            # --- REGRA DE PRESERVAÇÃO E SUBSTUTUIÇÃO DE GLOSA DA OPERADORA ---
             v_inf_f, v_lib_f = float(v_inf), float(v_lib)
             valor_glosa_final = round(v_inf_f - v_lib_f, 2)
             if valor_glosa_final > 0:
                 rg = ET.SubElement(det, '{http://www.ans.gov.br/padroes/tiss/schemas}relacaoGlosa')
                 ET.SubElement(rg, '{http://www.ans.gov.br/padroes/tiss/schemas}valorGlosa').text = f"{valor_glosa_final:.2f}"
                 
-                # Seleciona o código base
+                # Seleciona o código base vindo de <ans:tipoGlosa> no Retorno
                 if res and res.get('glosa_original'):
                     rg_tipo = res['glosa_original']
                 else:
                     rg_tipo = '1705' if is_amazonia else '1801'
                 
-                # --- DE-PARA DE GLOSAS (EXCLUSIVO SAÚDE AMAZÔNIA) ---
+                # --- DE-PARA DE GLOSAS NA TAG <ans:tipoGlosa> (EXCLUSIVO SAÚDE AMAZÔNIA) ---
                 if is_amazonia:
                     if rg_tipo == '1799':
                         rg_tipo = '1713'
                     elif rg_tipo == '9918':
                         rg_tipo = '1702'
-                    
+                
+                # Grava o valor convertido no nó <ans:tipoGlosa>
                 ET.SubElement(rg, '{http://www.ans.gov.br/padroes/tiss/schemas}tipoGlosa').text = rg_tipo
 
             t_g_inf += v_inf_f
