@@ -12,7 +12,6 @@ def limpar_hora(hora_texto):
     """Garante que a hora retorne estritamente no formato HH:MM:SS, removendo milissegundos e fuso."""
     if hora_texto:
         hora_limpa = hora_texto.strip()
-        # Se contiver fuso ou milissegundos, pega apenas os primeiros 8 caracteres (HH:MM:SS)
         return hora_limpa[:8]
     return "00:00:00"
 
@@ -32,20 +31,12 @@ def processar_xmls(envio_file, retorno_file):
 
     # Identificação do Convênio
     reg_ans_el = root_ret.find('.//ans:registroANS', ns)
-    reg_ans_texto = reg_ans_el.text if reg_ans_el is not None else ""
+    reg_ans_texto = reg_ans_el.text.strip() if reg_ans_el is not None and reg_ans_el.text else ""
     
-    # Flags de Convênio
     is_amazonia = reg_ans_texto == '419052'
     is_casf = reg_ans_texto == '358754'
     
-    # Agrupador de regras especiais
     aplicar_regra_especial = is_amazonia or is_casf
-
-    # Dicionário de conversão de glosas exclusivo da Amazônia
-    depara_glosa_amazonia = {
-        '1799': '1713',
-        '9918': '1702'
-    }
 
     # 1. MAPEAMENTO DO RETORNO
     mapa_retorno = {}
@@ -60,30 +51,49 @@ def processar_xmls(envio_file, retorno_file):
             elem = relacao.find(f'ans:{tag}', ns)
             meta[tag] = elem.text.strip() if (elem is not None and elem.text) else ""
         
+        dt_ini_ret = meta.get('dataInicioFat', '')
+        dt_fim_ret = meta.get('dataFimFat', '')
+
         itens_ret_lista = []
         for item in relacao.findall('.//ans:detalhesGuia', ns):
             p_elem = item.find('.//ans:procedimento', ns)
             v_inf_raw = item.find('.//ans:valorInformado', ns).text if item.find('.//ans:valorInformado', ns) is not None else "0.00"
             v_lib_raw = item.find('.//ans:valorLiberado', ns).text if item.find('.//ans:valorLiberado', ns) is not None else "0.00"
             
-            # Captura o tipo de glosa original do retorno
-            glosa_el = item.find('.//ans:relacaoGlosa/ans:tipoGlosa', ns)
+            # Captura a tag ans:tipoGlosa explicitamente dentro da relacaoGlosa
+            glosa_el = item.find('.//ans:relacaoGlosa/ans:tipoGlosa', ns) or item.find('.//ans:tipoGlosa', ns)
             glosa_original = glosa_el.text.strip() if (glosa_el is not None and glosa_el.text) else ""
             
+            cod_proc = p_elem.find('ans:codigoProcedimento', ns).text.strip() if (p_elem is not None and p_elem.find('ans:codigoProcedimento', ns) is not None) else ""
+            
             itens_ret_lista.append({
-                'cod_ret': p_elem.find('ans:codigoProcedimento', ns).text if p_elem is not None else "",
-                'desc_ret': p_elem.find('ans:descricaoProcedimento', ns).text if p_elem is not None else "PROCEDIMENTO",
+                'cod_ret': cod_proc,
+                'desc_ret': p_elem.find('ans:descricaoProcedimento', ns).text if (p_elem is not None and p_elem.find('ans:descricaoProcedimento', ns) is not None) else "PROCEDIMENTO",
                 'v_inf': f"{float(v_inf_raw):.2f}",
                 'v_lib': f"{float(v_lib_raw):.2f}",
                 'glosa_original': glosa_original,
                 'usado': False 
             })
         
-        dados_guia = {'meta': meta, 'itens': itens_ret_lista}
-        if n_guia_prest_ret is not None: mapa_retorno[f"GUIA_{limpar_numero(n_guia_prest_ret.text)}"] = dados_guia
-        if n_guia_oper_ret is not None: mapa_retorno[f"OPER_{limpar_numero(n_guia_oper_ret.text)}"] = dados_guia
-        if carteira_ret is not None: mapa_retorno[f"CART_{limpar_numero(carteira_ret.text)}"] = dados_guia
-        if senha_ret is not None: mapa_retorno[f"SENH_{limpar_numero(senha_ret.text)}"] = dados_guia
+        dados_guia = {'meta': meta, 'itens': itens_ret_lista, 'usado': False}
+
+        sufixo_periodo = f"_{dt_ini_ret}_{dt_fim_ret}" if is_amazonia else ""
+
+        if n_guia_prest_ret is not None and n_guia_prest_ret.text: 
+            mapa_retorno[f"GUIA_{limpar_numero(n_guia_prest_ret.text)}{sufixo_periodo}"] = dados_guia
+            mapa_retorno[f"GUIA_{limpar_numero(n_guia_prest_ret.text)}"] = dados_guia
+
+        if n_guia_oper_ret is not None and n_guia_oper_ret.text: 
+            mapa_retorno[f"OPER_{limpar_numero(n_guia_oper_ret.text)}{sufixo_periodo}"] = dados_guia
+            mapa_retorno[f"OPER_{limpar_numero(n_guia_oper_ret.text)}"] = dados_guia
+
+        if carteira_ret is not None and carteira_ret.text: 
+            mapa_retorno[f"CART_{limpar_numero(carteira_ret.text)}{sufixo_periodo}"] = dados_guia
+            mapa_retorno[f"CART_{limpar_numero(carteira_ret.text)}"] = dados_guia
+
+        if senha_ret is not None and senha_ret.text: 
+            mapa_retorno[f"SENH_{limpar_numero(senha_ret.text)}{sufixo_periodo}"] = dados_guia
+            mapa_retorno[f"SENH_{limpar_numero(senha_ret.text)}"] = dados_guia
 
     # 2. ESTRUTURA DO NOVO XML
     novo_root = ET.Element('{http://www.ans.gov.br/padroes/tiss/schemas}mensagemTISS', {
@@ -124,16 +134,33 @@ def processar_xmls(envio_file, retorno_file):
         n_limpo_prest = limpar_numero(n_guia_prest_raw)
         n_limpo_oper = limpar_numero(n_guia_oper_raw)
 
-        if n_limpo_prest in processadas_guias_limpas: continue
+        if tag_name == 'guiaConsulta':
+            d_ini_el = elemento.find('.//ans:dataAtendimento', ns)
+            d_fim_el = d_ini_el
+        else:
+            d_ini_el = elemento.find('.//ans:dataInicioFaturamento', ns) or elemento.find('.//ans:dataExecucao', ns)
+            d_fim_el = elemento.find('.//ans:dataFinalFaturamento', ns) or elemento.find('.//ans:dataFimFaturamento', ns) or d_ini_el
 
-        guia_retorno = (mapa_retorno.get(f"GUIA_{n_limpo_prest}") or 
+        dt_ini_env = d_ini_el.text.strip() if (d_ini_el is not None and d_ini_el.text) else ""
+        dt_fim_env = d_fim_el.text.strip() if (d_fim_el is not None and d_fim_el.text) else dt_ini_env
+
+        chave_processamento = f"{n_limpo_prest}_{dt_ini_env}_{dt_fim_env}" if is_amazonia else n_limpo_prest
+        if chave_processamento in processadas_guias_limpas: 
+            continue
+
+        sufixo_env = f"_{dt_ini_env}_{dt_fim_env}" if is_amazonia else ""
+
+        guia_retorno = (mapa_retorno.get(f"GUIA_{n_limpo_prest}{sufixo_env}") or 
+                        mapa_retorno.get(f"OPER_{n_limpo_oper}{sufixo_env}") or
+                        mapa_retorno.get(f"GUIA_{n_limpo_prest}") or 
                         mapa_retorno.get(f"OPER_{n_limpo_oper}") or
-                        mapa_retorno.get(f"OPER_{n_limpo_prest}") or
                         mapa_retorno.get(f"SENH_{limpar_numero(senha_raw)}") or
                         mapa_retorno.get(f"CART_{limpar_numero(carteira_raw)}"))
         
-        if not guia_retorno: continue
-        processadas_guias_limpas.add(n_limpo_prest)
+        if not guia_retorno: 
+            continue
+            
+        processadas_guias_limpas.add(chave_processamento)
 
         m = guia_retorno['meta']
         itens_ret_disponiveis = guia_retorno['itens']
@@ -144,25 +171,21 @@ def processar_xmls(envio_file, retorno_file):
         ET.SubElement(rel_guia, '{http://www.ans.gov.br/padroes/tiss/schemas}senha').text = senha_raw if senha_raw else m.get('senha', "")
         ET.SubElement(rel_guia, '{http://www.ans.gov.br/padroes/tiss/schemas}numeroCarteira').text = carteira_raw
         
-        # Datas e Horas
         if tag_name == 'guiaConsulta':
-            d_ini_el = elemento.find('.//ans:dataAtendimento', ns)
             h_ini_el = elemento.find('.//ans:horaAtendimento', ns)
-            d_fim_el = d_ini_el
             h_fim_el = h_ini_el
         else:
-            d_ini_el = elemento.find('.//ans:dataInicioFaturamento', ns) or elemento.find('.//ans:dataExecucao', ns)
             h_ini_el = elemento.find('.//ans:horaInicioFaturamento', ns) or elemento.find('.//ans:horaInicial', ns)
-            d_fim_el = elemento.find('.//ans:dataFinalFaturamento', ns) or elemento.find('.//ans:dataFimFaturamento', ns) or d_ini_el
             h_fim_el = elemento.find('.//ans:horaFinalFaturamento', ns) or elemento.find('.//ans:horaFinal', ns)
 
-        data_ini_val = d_ini_el.text if d_ini_el is not None else m.get('dataInicioFat', "")
+        data_ini_val = dt_ini_env if dt_ini_env else m.get('dataInicioFat', "")
+        
         envio_h_ini = h_ini_el.text if h_ini_el is not None else ""
         envio_h_fim = h_fim_el.text if h_fim_el is not None else ""
         
         if is_amazonia:
             hora_ini_val = "00:00:00"
-            data_fim_val = data_ini_val
+            data_fim_val = dt_fim_env if dt_fim_env else data_ini_val
             hora_fim_val = "00:00:00"
         else:
             hora_ini_val = limpar_hora(envio_h_ini if envio_h_ini else m.get('horaInicioFat', "00:00:00"))
@@ -175,7 +198,7 @@ def processar_xmls(envio_file, retorno_file):
 
         ET.SubElement(rel_guia, '{http://www.ans.gov.br/padroes/tiss/schemas}dataInicioFat').text = data_ini_val
         ET.SubElement(rel_guia, '{http://www.ans.gov.br/padroes/tiss/schemas}horaInicioFat').text = hora_ini_val
-        ET.SubElement(rel_guia, '{http://.ans.gov.br/padroes/tiss/schemas}dataFimFat').text = data_fim_val
+        ET.SubElement(rel_guia, '{http://www.ans.gov.br/padroes/tiss/schemas}dataFimFat').text = data_fim_val
         ET.SubElement(rel_guia, '{http://www.ans.gov.br/padroes/tiss/schemas}horaFimFat').text = hora_fim_val
         ET.SubElement(rel_guia, '{http://www.ans.gov.br/padroes/tiss/schemas}situacaoGuia').text = "6" if aplicar_regra_especial else m.get('situacaoGuia', "")
 
@@ -187,8 +210,18 @@ def processar_xmls(envio_file, retorno_file):
             v_total_el = servico.find('.//ans:valorTotal', ns) if tag_name != 'guiaConsulta' else item_env.find('.//ans:valorProcedimento', ns)
             v_env_str = f"{float(v_total_el.text):.2f}" if (v_total_el is not None and v_total_el.text) else "0.00"
             
-            res = next((it for it in itens_ret_disponiveis if not it['usado'] and it['v_inf'] == v_env_str), None)
-            if res: res['usado'] = True
+            proc_env = servico.find('.//ans:procedimento', ns) if servico.find('.//ans:procedimento', ns) is not None else servico
+            cod_env = proc_env.find('.//ans:codigoProcedimento', ns).text.strip() if (proc_env is not None and proc_env.find('.//ans:codigoProcedimento', ns) is not None) else ""
+
+            # CASAMENTO MELHORADO: Tenta bater primeiro Valor + Código, depois só Valor, depois só Código
+            res = next((it for it in itens_ret_disponiveis if not it['usado'] and it['v_inf'] == v_env_str and it['cod_ret'] == cod_env), None)
+            if not res:
+                res = next((it for it in itens_ret_disponiveis if not it['usado'] and it['v_inf'] == v_env_str), None)
+            if not res:
+                res = next((it for it in itens_ret_disponiveis if not it['usado'] and it['cod_ret'] == cod_env), None)
+
+            if res: 
+                res['usado'] = True
 
             v_inf, v_lib = (res['v_inf'], res['v_lib']) if res else (v_env_str, "0.00")
             
@@ -197,9 +230,8 @@ def processar_xmls(envio_file, retorno_file):
             ET.SubElement(det, '{http://www.ans.gov.br/padroes/tiss/schemas}dataRealizacao').text = data_ini_val
             
             ptag = ET.SubElement(det, '{http://www.ans.gov.br/padroes/tiss/schemas}procedimento')
-            proc_env = servico.find('.//ans:procedimento', ns) if servico.find('.//ans:procedimento', ns) is not None else servico
             ET.SubElement(ptag, '{http://www.ans.gov.br/padroes/tiss/schemas}codigoTabela').text = proc_env.find('.//ans:codigoTabela', ns).text if proc_env.find('.//ans:codigoTabela', ns) is not None else "00"
-            ET.SubElement(ptag, '{http://www.ans.gov.br/padroes/tiss/schemas}codigoProcedimento').text = proc_env.find('.//ans:codigoProcedimento', ns).text if proc_env.find('.//ans:codigoProcedimento', ns) is not None else "00"
+            ET.SubElement(ptag, '{http://www.ans.gov.br/padroes/tiss/schemas}codigoProcedimento').text = cod_env if cod_env else "00"
             ET.SubElement(ptag, '{http://www.ans.gov.br/padroes/tiss/schemas}descricaoProcedimento').text = res['desc_ret'] if (res and res['desc_ret']) else "PROCEDIMENTO"
             
             ET.SubElement(det, '{http://www.ans.gov.br/padroes/tiss/schemas}valorInformado').text = v_inf
@@ -210,22 +242,27 @@ def processar_xmls(envio_file, retorno_file):
             ET.SubElement(det, '{http://www.ans.gov.br/padroes/tiss/schemas}valorProcessado').text = v_inf
             ET.SubElement(det, '{http://www.ans.gov.br/padroes/tiss/schemas}valorLiberado').text = v_lib
 
-            # --- REGRA DE TRATAMENTO E CONVERSÃO DE GLOSAS ---
+            # --- TRATAMENTO DA GLOSA E DE-PARA ---
             v_inf_f, v_lib_f = float(v_inf), float(v_lib)
             valor_glosa_final = round(v_inf_f - v_lib_f, 2)
             if valor_glosa_final > 0:
                 rg = ET.SubElement(det, '{http://www.ans.gov.br/padroes/tiss/schemas}relacaoGlosa')
                 ET.SubElement(rg, '{http://www.ans.gov.br/padroes/tiss/schemas}valorGlosa').text = f"{valor_glosa_final:.2f}"
                 
-                glosa_orig = res.get('glosa_original') if res else ""
+                # Resgata o código de glosa
+                rg_tipo = res.get('glosa_original', '') if res else ''
                 
+                # Se não veio glosa explícita no item mas há valor glosado
+                if not rg_tipo:
+                    rg_tipo = '1705' if is_amazonia else '1801'
+                
+                # --- APLICAÇÃO RÍGIDA DO DE-PARA PARA AMAZÔNIA ---
                 if is_amazonia:
-                    # Aplica a conversão de-para específica do convênio Amazônia
-                    rg_tipo = depara_glosa_amazonia.get(glosa_orig, '1705')
-                else:
-                    # Para CASF / Unimed: preserva a glosa vinda do retorno ou aplica o padrão 1801
-                    rg_tipo = glosa_orig if glosa_orig else '1801'
-                    
+                    if rg_tipo == '1799':
+                        rg_tipo = '1713'
+                    elif rg_tipo == '9918':
+                        rg_tipo = '1702'
+                
                 ET.SubElement(rg, '{http://www.ans.gov.br/padroes/tiss/schemas}tipoGlosa').text = rg_tipo
 
             t_g_inf += v_inf_f
