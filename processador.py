@@ -102,9 +102,17 @@ def processar_xmls(envio_file, retorno_file):
 
     total_inf_geral, total_lib_geral, processadas_guias_limpas = 0.0, 0.0, set()
 
-    # 3. PROCESSAMENTO - TAGS VÁLIDAS DE GUIA NO ENVIO
-    # Lista estrita de elementos que representam o nó principal de uma guia
-    tags_guias_validas = {'guiaconsulta', 'guiasadt', 'guiaresumointernacao', 'guiahonorarios', 'guiafaturamento'}
+    # 3. PROCESSAMENTO - TAGS VÁLIDAS DE GUIA NO ENVIO (INCLUI GUIA SP-SADT)
+    tags_guias_validas = {
+        'guiaconsulta', 
+        'guiasadt', 
+        'guiasp-sadt', 
+        'guiasp_sadt',
+        'guiaresumointernacao', 
+        'guiahonorarios', 
+        'guiahonorario',
+        'guiafaturamento'
+    }
 
     for elemento in root_env.findall('.//*', ns):
         tag_name = elemento.tag.split('}')[-1]
@@ -127,9 +135,9 @@ def processar_xmls(envio_file, retorno_file):
             continue
 
         # Identifica os itens do envio
-        itens_env = elemento.findall('.//ans:procedimento', ns) if tag_name == 'guiaConsulta' else (elemento.findall('.//ans:procedimentoExecutado', ns) + elemento.findall('.//ans:despesa', ns))
+        itens_env = elemento.findall('.//ans:procedimento', ns) if tag_name.lower() == 'guiaconsulta' else (elemento.findall('.//ans:procedimentoExecutado', ns) + elemento.findall('.//ans:despesa', ns))
         
-        # FIX DE INTERNAÇÃO: Se o nó capturado não possui nenhum item/despesa, ignora para não gerar guia fantasma zerada
+        # Se o nó capturado não possui nenhum item/despesa, ignora para não gerar guia fantasma zerada
         if not itens_env:
             continue
 
@@ -155,7 +163,7 @@ def processar_xmls(envio_file, retorno_file):
         ET.SubElement(rel_guia, '{http://www.ans.gov.br/padroes/tiss/schemas}numeroCarteira').text = carteira_raw
         
         # --- DATAS E HORAS ---
-        if tag_name == 'guiaConsulta':
+        if tag_name.lower() == 'guiaconsulta':
             d_ini_el = elemento.find('.//ans:dataAtendimento', ns)
             h_ini_el = elemento.find('.//ans:horaAtendimento', ns)
             d_fim_el = d_ini_el
@@ -178,7 +186,7 @@ def processar_xmls(envio_file, retorno_file):
             hora_ini_val = limpar_hora(envio_h_ini if envio_h_ini else m.get('horaInicioFat', "00:00:00"))
             data_fim_val = d_fim_el.text if (d_fim_el is not None and d_fim_el.text) else m.get('dataFimFat', data_ini_val)
             
-            if tag_name == 'guiaConsulta':
+            if tag_name.lower() == 'guiaconsulta':
                 hora_fim_val = hora_ini_val
             else:
                 hora_fim_val = limpar_hora(envio_h_fim if envio_h_fim else m.get('horaFimFat', hora_ini_val))
@@ -193,7 +201,7 @@ def processar_xmls(envio_file, retorno_file):
         
         for idx_env, item_env in enumerate(itens_env):
             servico = item_env.find('.//ans:servicosExecutados', ns) if item_env.tag.endswith('despesa') else item_env
-            v_total_el = servico.find('.//ans:valorTotal', ns) if tag_name != 'guiaConsulta' else item_env.find('.//ans:valorProcedimento', ns)
+            v_total_el = servico.find('.//ans:valorTotal', ns) if tag_name.lower() != 'guiaconsulta' else item_env.find('.//ans:valorProcedimento', ns)
             v_env_str = f"{float(v_total_el.text):.2f}" if (v_total_el is not None and v_total_el.text) else "0.00"
             
             res = next((it for it in itens_ret_disponiveis if not it['usado'] and it['v_inf'] == v_env_str), None)
