@@ -12,7 +12,6 @@ def limpar_hora(hora_texto):
     """Garante que a hora retorne estritamente no formato HH:MM:SS, removendo milissegundos e fuso."""
     if hora_texto:
         hora_limpa = hora_texto.strip()
-        # Se contiver fuso ou milissegundos, pega apenas os primeiros 8 caracteres (HH:MM:SS)
         return hora_limpa[:8]
     return "00:00:00"
 
@@ -41,13 +40,8 @@ def processar_xmls(envio_file, retorno_file):
     # Agrupador de regras especiais (Amazônia e CASF)
     aplicar_regra_especial = is_amazonia or is_casf
 
-    # 1. MAPEAMENTO DO RETORNO (Suporta múltiplas ocorrências da mesma guia com períodos diferentes)
+    # 1. MAPEAMENTO DO RETORNO COM CHAVE COMPOSTA (Número + Data de Início)
     mapa_retorno = {}
-
-    def adicionar_ao_mapa(chave, dados):
-        if chave not in mapa_retorno:
-            mapa_retorno[chave] = []
-        mapa_retorno[chave].append(dados)
 
     for relacao in root_ret.findall('.//ans:relacaoGuias', ns):
         n_guia_prest_ret = relacao.find('.//ans:numeroGuiaPrestador', ns)
@@ -60,6 +54,8 @@ def processar_xmls(envio_file, retorno_file):
             elem = relacao.find(f'ans:{tag}', ns)
             meta[tag] = elem.text.strip() if (elem is not None and elem.text) else ""
         
+        d_ini_ret = meta.get('dataInicioFat', "")
+
         itens_ret_lista = []
         for item in relacao.findall('.//ans:detalhesGuia', ns):
             p_elem = item.find('.//ans:procedimento', ns)
@@ -80,14 +76,21 @@ def processar_xmls(envio_file, retorno_file):
         
         dados_guia = {'meta': meta, 'itens': itens_ret_lista, 'usado': False}
 
+        # Cria chaves incluindo a data de início do faturamento para desambiguar períodos diferentes
         if n_guia_prest_ret is not None and n_guia_prest_ret.text: 
-            adicionar_ao_mapa(f"GUIA_{limpar_numero(n_guia_prest_ret.text)}", dados_guia)
+            p_num = limpar_numero(n_guia_prest_ret.text)
+            mapa_retorno[f"GUIA_{p_num}_{d_ini_ret}"] = dados_guia
+            mapa_retorno[f"GUIA_{p_num}"] = dados_guia # Fallback simples
         if n_guia_oper_ret is not None and n_guia_oper_ret.text: 
-            adicionar_ao_mapa(f"OPER_{limpar_numero(n_guia_oper_ret.text)}", dados_guia)
+            o_num = limpar_numero(n_guia_oper_ret.text)
+            mapa_retorno[f"OPER_{o_num}_{d_ini_ret}"] = dados_guia
+            mapa_retorno[f"OPER_{o_num}"] = dados_guia
         if carteira_ret is not None and carteira_ret.text: 
-            adicionar_ao_mapa(f"CART_{limpar_numero(carteira_ret.text)}", dados_guia)
+            c_num = limpar_numero(carteira_ret.text)
+            mapa_retorno[f"CART_{c_num}_{d_ini_ret}"] = dados_guia
         if senha_ret is not None and senha_ret.text: 
-            adicionar_ao_mapa(f"SENH_{limpar_numero(senha_ret.text)}", dados_guia)
+            s_num = limpar_numero(senha_ret.text)
+            mapa_retorno[f"SENH_{s_num}_{d_ini_ret}"] = dados_guia
 
     # 2. ESTRUTURA DO NOVO XML
     novo_root = ET.Element('{http://www.ans.gov.br/padroes/tiss/schemas}mensagemTISS', {
@@ -113,22 +116,23 @@ def processar_xmls(envio_file, retorno_file):
 
     total_inf_geral, total_lib_geral = 0.0, 0.0
 
-    # 3. PROCESSAMENTO - TAGS VÁLIDAS DE GUIA NO ENVIO
+    # 3. PROCESSAMENTO DAS GUIAS DO ENVIO
     tags_guias_validas = {
         'guiaconsulta', 
         'guiasadt', 
         'guiasp-sadt', 
         'guiasp_sadt',
-        'guiaresumointernacao', 
+        'guiaresumointernacao',
+        'guiainternacao',
         'guiahonorarios', 
         'guiahonorario',
         'guiafaturamento'
     }
 
     for elemento in root_env.findall('.//*', ns):
-        tag_name = elemento.tag.split('}')[-1]
+        tag_name = elemento.tag.split('}')[-1].lower()
         
-        if tag_name.lower() not in tags_guias_validas:
+        if tag_name not in tags_guias_validas:
             continue
             
         n_guia_prest_raw = elemento.find('.//ans:numeroGuiaPrestador', ns).text if elemento.find('.//ans:numeroGuiaPrestador', ns) is not None else ""
@@ -140,15 +144,14 @@ def processar_xmls(envio_file, retorno_file):
         n_limpo_prest = limpar_numero(n_guia_prest_raw)
         n_limpo_oper = limpar_numero(n_guia_oper_raw)
 
-        # Identifica os itens do envio
-        itens_env = elemento.findall('.//ans:procedimento', ns) if tag_name.lower() == 'guiaconsulta' else (elemento.findall('.//ans:procedimentoExecutado', ns) + elemento.findall('.//ans:despesa', ns))
+        # Extração flexível de procedimentos/despesas
+        itens_env = elemento.findall('.//ans:procedimentoExecutado', ns) + elemento.findall('.//ans:despesa', ns) + elemento.findall('.//ans:procedimento', ns)
         
-        # Ignora blocos vazios/sem itens para evitar geração de cabeçalhos fantasmas
         if not itens_env:
             continue
 
-        # Extração das datas para refinamento de busca por período
-        if tag_name.lower() == 'guiaconsulta':
+        # Extração de datas e horas do envio
+        if tag_name == 'guiaconsulta':
             d_ini_el = elemento.find('.//ans:dataAtendimento', ns)
             h_ini_el = elemento.find('.//ans:horaAtendimento', ns)
             d_fim_el = d_ini_el
@@ -160,28 +163,20 @@ def processar_xmls(envio_file, retorno_file):
             h_fim_el = elemento.find('.//ans:horaFinalFaturamento', ns) or elemento.find('.//ans:horaFinal', ns)
 
         data_ini_envio = d_ini_el.text if d_ini_el is not None else ""
+        data_fim_envio = d_fim_el.text if d_fim_el is not None else data_ini_envio
 
-        # BUSCA FLEXÍVEL CONSIDERANDO DATA/PERÍODO E ESTADO DE USO
-        candidatos = (mapa_retorno.get(f"GUIA_{n_limpo_prest}", []) +
-                      mapa_retorno.get(f"OPER_{n_limpo_oper}", []) +
-                      mapa_retorno.get(f"OPER_{n_limpo_prest}", []) +
-                      mapa_retorno.get(f"SENH_{limpar_numero(senha_raw)}", []) +
-                      mapa_retorno.get(f"CART_{limpar_numero(carteira_raw)}", []))
+        # BUSCA REFINADA NO MAPA UTILIZANDO NÚMERO + DATA
+        guia_retorno = (mapa_retorno.get(f"GUIA_{n_limpo_prest}_{data_ini_envio}") or 
+                        mapa_retorno.get(f"OPER_{n_limpo_oper}_{data_ini_envio}") or
+                        mapa_retorno.get(f"SENH_{limpar_numero(senha_raw)}_{data_ini_envio}") or
+                        mapa_retorno.get(f"CART_{limpar_numero(carteira_raw)}_{data_ini_envio}") or
+                        mapa_retorno.get(f"GUIA_{n_limpo_prest}") or
+                        mapa_retorno.get(f"OPER_{n_limpo_oper}"))
 
-        # Filtra opções que ainda não foram utilizadas
-        opcoes_disponiveis = [c for c in candidatos if not c['usado']]
-
-        if not opcoes_disponiveis:
+        if not guia_retorno or guia_retorno.get('usado'):
             continue
 
-        # 1º Tenta casar pelo mesmo Número + Mesma Data de Início do Faturamento
-        guia_retorno = next((c for c in opcoes_disponiveis if c['meta'].get('dataInicioFat') == data_ini_envio), None)
-        
-        # 2º Fallback: pega o primeiro retorno disponível com aquele número se a data não bater exatamente
-        if not guia_retorno:
-            guia_retorno = opcoes_disponiveis[0]
-
-        # Marca a guia do retorno como processada
+        # Marca como usada para que a próxima iteração não pegue a mesma guia
         guia_retorno['usado'] = True
 
         m = guia_retorno['meta']
@@ -193,20 +188,20 @@ def processar_xmls(envio_file, retorno_file):
         ET.SubElement(rel_guia, '{http://www.ans.gov.br/padroes/tiss/schemas}senha').text = senha_raw if senha_raw else m.get('senha', "")
         ET.SubElement(rel_guia, '{http://www.ans.gov.br/padroes/tiss/schemas}numeroCarteira').text = carteira_raw
         
-        # --- DATAS E HORAS ---
+        # --- AJUSTE DE DATAS E HORAS ---
         data_ini_val = data_ini_envio if data_ini_envio else m.get('dataInicioFat', "")
+        data_fim_val = data_fim_envio if data_fim_envio else m.get('dataFimFat', data_ini_val)
+
         envio_h_ini = h_ini_el.text if h_ini_el is not None else ""
         envio_h_fim = h_fim_el.text if h_fim_el is not None else ""
         
         if is_amazonia:
+            # Amazônia exige horas zeradas (00:00:00), mas MANTÉM as datas de início e fim enviadas
             hora_ini_val = "00:00:00"
-            data_fim_val = d_fim_el.text if (d_fim_el is not None and d_fim_el.text) else data_ini_val
             hora_fim_val = "00:00:00"
         else:
             hora_ini_val = limpar_hora(envio_h_ini if envio_h_ini else m.get('horaInicioFat', "00:00:00"))
-            data_fim_val = d_fim_el.text if (d_fim_el is not None and d_fim_el.text) else m.get('dataFimFat', data_ini_val)
-            
-            if tag_name.lower() == 'guiaconsulta':
+            if tag_name == 'guiaconsulta':
                 hora_fim_val = hora_ini_val
             else:
                 hora_fim_val = limpar_hora(envio_h_fim if envio_h_fim else m.get('horaFimFat', hora_ini_val))
@@ -221,7 +216,7 @@ def processar_xmls(envio_file, retorno_file):
         
         for idx_env, item_env in enumerate(itens_env):
             servico = item_env.find('.//ans:servicosExecutados', ns) if item_env.tag.endswith('despesa') else item_env
-            v_total_el = servico.find('.//ans:valorTotal', ns) if tag_name.lower() != 'guiaconsulta' else item_env.find('.//ans:valorProcedimento', ns)
+            v_total_el = servico.find('.//ans:valorTotal', ns) if tag_name != 'guiaconsulta' else item_env.find('.//ans:valorProcedimento', ns)
             v_env_str = f"{float(v_total_el.text):.2f}" if (v_total_el is not None and v_total_el.text) else "0.00"
             
             res = next((it for it in itens_ret_disponiveis if not it['usado'] and it['v_inf'] == v_env_str), None)
