@@ -41,8 +41,14 @@ def processar_xmls(envio_file, retorno_file):
     # Agrupador de regras especiais (Amazônia e CASF)
     aplicar_regra_especial = is_amazonia or is_casf
 
-    # 1. MAPEAMENTO DO RETORNO
+    # 1. MAPEAMENTO DO RETORNO (Suporta múltiplas ocorrências da mesma guia com períodos diferentes)
     mapa_retorno = {}
+
+    def adicionar_ao_mapa(chave, dados):
+        if chave not in mapa_retorno:
+            mapa_retorno[chave] = []
+        mapa_retorno[chave].append(dados)
+
     for relacao in root_ret.findall('.//ans:relacaoGuias', ns):
         n_guia_prest_ret = relacao.find('.//ans:numeroGuiaPrestador', ns)
         n_guia_oper_ret = relacao.find('.//ans:numeroGuiaOperadora', ns)
@@ -72,11 +78,16 @@ def processar_xmls(envio_file, retorno_file):
                 'usado': False 
             })
         
-        dados_guia = {'meta': meta, 'itens': itens_ret_lista}
-        if n_guia_prest_ret is not None: mapa_retorno[f"GUIA_{limpar_numero(n_guia_prest_ret.text)}"] = dados_guia
-        if n_guia_oper_ret is not None: mapa_retorno[f"OPER_{limpar_numero(n_guia_oper_ret.text)}"] = dados_guia
-        if carteira_ret is not None: mapa_retorno[f"CART_{limpar_numero(carteira_ret.text)}"] = dados_guia
-        if senha_ret is not None: mapa_retorno[f"SENH_{limpar_numero(senha_ret.text)}"] = dados_guia
+        dados_guia = {'meta': meta, 'itens': itens_ret_lista, 'usado': False}
+
+        if n_guia_prest_ret is not None and n_guia_prest_ret.text: 
+            adicionar_ao_mapa(f"GUIA_{limpar_numero(n_guia_prest_ret.text)}", dados_guia)
+        if n_guia_oper_ret is not None and n_guia_oper_ret.text: 
+            adicionar_ao_mapa(f"OPER_{limpar_numero(n_guia_oper_ret.text)}", dados_guia)
+        if carteira_ret is not None and carteira_ret.text: 
+            adicionar_ao_mapa(f"CART_{limpar_numero(carteira_ret.text)}", dados_guia)
+        if senha_ret is not None and senha_ret.text: 
+            adicionar_ao_mapa(f"SENH_{limpar_numero(senha_ret.text)}", dados_guia)
 
     # 2. ESTRUTURA DO NOVO XML
     novo_root = ET.Element('{http://www.ans.gov.br/padroes/tiss/schemas}mensagemTISS', {
@@ -100,9 +111,9 @@ def processar_xmls(envio_file, retorno_file):
         if aplicar_regra_especial and tag == 'situacaoProtocolo': valor_final = "6"
         ET.SubElement(protocolo, f'{{http://www.ans.gov.br/padroes/tiss/schemas}}{tag}').text = valor_final
 
-    total_inf_geral, total_lib_geral, processadas_guias_limpas = 0.0, 0.0, set()
+    total_inf_geral, total_lib_geral = 0.0, 0.0
 
-    # 3. PROCESSAMENTO - TAGS VÁLIDAS DE GUIA NO ENVIO (INCLUI GUIA SP-SADT)
+    # 3. PROCESSAMENTO - TAGS VÁLIDAS DE GUIA NO ENVIO
     tags_guias_validas = {
         'guiaconsulta', 
         'guiasadt', 
@@ -117,7 +128,6 @@ def processar_xmls(envio_file, retorno_file):
     for elemento in root_env.findall('.//*', ns):
         tag_name = elemento.tag.split('}')[-1]
         
-        # Filtro refinado: só aceita se for uma tag principal de guia
         if tag_name.lower() not in tags_guias_validas:
             continue
             
@@ -130,39 +140,14 @@ def processar_xmls(envio_file, retorno_file):
         n_limpo_prest = limpar_numero(n_guia_prest_raw)
         n_limpo_oper = limpar_numero(n_guia_oper_raw)
 
-        # Evita processar a mesma guia duas vezes
-        if n_limpo_prest in processadas_guias_limpas: 
-            continue
-
         # Identifica os itens do envio
         itens_env = elemento.findall('.//ans:procedimento', ns) if tag_name.lower() == 'guiaconsulta' else (elemento.findall('.//ans:procedimentoExecutado', ns) + elemento.findall('.//ans:despesa', ns))
         
-        # Se o nó capturado não possui nenhum item/despesa, ignora para não gerar guia fantasma zerada
+        # Ignora blocos vazios/sem itens para evitar geração de cabeçalhos fantasmas
         if not itens_env:
             continue
 
-        # Busca flexível no retorno
-        guia_retorno = (mapa_retorno.get(f"GUIA_{n_limpo_prest}") or 
-                        mapa_retorno.get(f"OPER_{n_limpo_oper}") or
-                        mapa_retorno.get(f"OPER_{n_limpo_prest}") or
-                        mapa_retorno.get(f"SENH_{limpar_numero(senha_raw)}") or
-                        mapa_retorno.get(f"CART_{limpar_numero(carteira_raw)}"))
-        
-        if not guia_retorno: 
-            continue
-            
-        processadas_guias_limpas.add(n_limpo_prest)
-
-        m = guia_retorno['meta']
-        itens_ret_disponiveis = guia_retorno['itens']
-        
-        rel_guia = ET.SubElement(protocolo, '{http://www.ans.gov.br/padroes/tiss/schemas}relacaoGuias')
-        ET.SubElement(rel_guia, '{http://www.ans.gov.br/padroes/tiss/schemas}numeroGuiaPrestador').text = n_guia_prest_raw
-        ET.SubElement(rel_guia, '{http://www.ans.gov.br/padroes/tiss/schemas}numeroGuiaOperadora').text = n_guia_oper_raw if n_guia_oper_raw else m['numeroGuiaOperadora']
-        ET.SubElement(rel_guia, '{http://www.ans.gov.br/padroes/tiss/schemas}senha').text = senha_raw if senha_raw else m.get('senha', "")
-        ET.SubElement(rel_guia, '{http://www.ans.gov.br/padroes/tiss/schemas}numeroCarteira').text = carteira_raw
-        
-        # --- DATAS E HORAS ---
+        # Extração das datas para refinamento de busca por período
         if tag_name.lower() == 'guiaconsulta':
             d_ini_el = elemento.find('.//ans:dataAtendimento', ns)
             h_ini_el = elemento.find('.//ans:horaAtendimento', ns)
@@ -174,13 +159,48 @@ def processar_xmls(envio_file, retorno_file):
             d_fim_el = elemento.find('.//ans:dataFinalFaturamento', ns) or elemento.find('.//ans:dataFimFaturamento', ns) or d_ini_el
             h_fim_el = elemento.find('.//ans:horaFinalFaturamento', ns) or elemento.find('.//ans:horaFinal', ns)
 
-        data_ini_val = d_ini_el.text if d_ini_el is not None else m.get('dataInicioFat', "")
+        data_ini_envio = d_ini_el.text if d_ini_el is not None else ""
+
+        # BUSCA FLEXÍVEL CONSIDERANDO DATA/PERÍODO E ESTADO DE USO
+        candidatos = (mapa_retorno.get(f"GUIA_{n_limpo_prest}", []) +
+                      mapa_retorno.get(f"OPER_{n_limpo_oper}", []) +
+                      mapa_retorno.get(f"OPER_{n_limpo_prest}", []) +
+                      mapa_retorno.get(f"SENH_{limpar_numero(senha_raw)}", []) +
+                      mapa_retorno.get(f"CART_{limpar_numero(carteira_raw)}", []))
+
+        # Filtra opções que ainda não foram utilizadas
+        opcoes_disponiveis = [c for c in candidatos if not c['usado']]
+
+        if not opcoes_disponiveis:
+            continue
+
+        # 1º Tenta casar pelo mesmo Número + Mesma Data de Início do Faturamento
+        guia_retorno = next((c for c in opcoes_disponiveis if c['meta'].get('dataInicioFat') == data_ini_envio), None)
+        
+        # 2º Fallback: pega o primeiro retorno disponível com aquele número se a data não bater exatamente
+        if not guia_retorno:
+            guia_retorno = opcoes_disponiveis[0]
+
+        # Marca a guia do retorno como processada
+        guia_retorno['usado'] = True
+
+        m = guia_retorno['meta']
+        itens_ret_disponiveis = guia_retorno['itens']
+        
+        rel_guia = ET.SubElement(protocolo, '{http://www.ans.gov.br/padroes/tiss/schemas}relacaoGuias')
+        ET.SubElement(rel_guia, '{http://www.ans.gov.br/padroes/tiss/schemas}numeroGuiaPrestador').text = n_guia_prest_raw
+        ET.SubElement(rel_guia, '{http://www.ans.gov.br/padroes/tiss/schemas}numeroGuiaOperadora').text = n_guia_oper_raw if n_guia_oper_raw else m['numeroGuiaOperadora']
+        ET.SubElement(rel_guia, '{http://www.ans.gov.br/padroes/tiss/schemas}senha').text = senha_raw if senha_raw else m.get('senha', "")
+        ET.SubElement(rel_guia, '{http://www.ans.gov.br/padroes/tiss/schemas}numeroCarteira').text = carteira_raw
+        
+        # --- DATAS E HORAS ---
+        data_ini_val = data_ini_envio if data_ini_envio else m.get('dataInicioFat', "")
         envio_h_ini = h_ini_el.text if h_ini_el is not None else ""
         envio_h_fim = h_fim_el.text if h_fim_el is not None else ""
         
         if is_amazonia:
             hora_ini_val = "00:00:00"
-            data_fim_val = data_ini_val
+            data_fim_val = d_fim_el.text if (d_fim_el is not None and d_fim_el.text) else data_ini_val
             hora_fim_val = "00:00:00"
         else:
             hora_ini_val = limpar_hora(envio_h_ini if envio_h_ini else m.get('horaInicioFat', "00:00:00"))
