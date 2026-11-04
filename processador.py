@@ -67,14 +67,22 @@ def processar_xmls(envio_file, retorno_file):
             v_inf_raw = item.find('.//ans:valorInformado', ns).text if item.find('.//ans:valorInformado', ns) is not None else "0.00"
             v_lib_raw = item.find('.//ans:valorLiberado', ns).text if item.find('.//ans:valorLiberado', ns) is not None else "0.00"
             
+            # Captura a quantidade executada do retorno se existir
+            qtd_ret_el = item.find('.//ans:qtdExecutada', ns)
+            qtd_ret_val = qtd_ret_el.text.strip() if (qtd_ret_el is not None and qtd_ret_el.text) else "1.00"
+
             glosa_el = item.find('.//ans:relacaoGlosa/ans:tipoGlosa', ns)
             glosa_original = glosa_el.text.strip() if (glosa_el is not None and glosa_el.text) else ""
             
+            cod_proc_ret = p_elem.find('ans:codigoProcedimento', ns).text.strip() if (p_elem is not None and p_elem.find('ans:codigoProcedimento', ns) is not None) else ""
+            desc_proc_ret = p_elem.find('ans:descricaoProcedimento', ns).text.strip() if (p_elem is not None and p_elem.find('ans:descricaoProcedimento', ns) is not None) else "PROCEDIMENTO"
+
             itens_ret_lista.append({
-                'cod_ret': p_elem.find('ans:codigoProcedimento', ns).text if p_elem is not None else "",
-                'desc_ret': p_elem.find('ans:descricaoProcedimento', ns).text if p_elem is not None else "PROCEDIMENTO",
+                'cod_ret': cod_proc_ret,
+                'desc_ret': desc_proc_ret,
                 'v_inf': f"{float(v_inf_raw):.2f}",
                 'v_lib': f"{float(v_lib_raw):.2f}",
+                'qtd_ret': f"{float(qtd_ret_val):.2f}",
                 'glosa_original': glosa_original,
                 'usado': False 
             })
@@ -148,7 +156,7 @@ def processar_xmls(envio_file, retorno_file):
         n_limpo_prest = limpar_numero(n_guia_prest_raw)
         n_limpo_oper = limpar_numero(n_guia_oper_raw)
 
-        # Extração corrigida de procedimentos sem duplicar nós internos
+        # Captura estrita e limpa dos itens do envio
         if tag_name == 'guiaconsulta':
             itens_env = elemento.findall('.//ans:procedimento', ns)
         else:
@@ -172,7 +180,6 @@ def processar_xmls(envio_file, retorno_file):
         data_ini_envio = d_ini_el.text if d_ini_el is not None else ""
         data_fim_envio = d_fim_el.text if d_fim_el is not None else data_ini_envio
 
-        # BUSCA REFINADA NO MAPA UTILIZANDO NÚMERO + DATA
         candidatos = (mapa_retorno.get(f"GUIA_{n_limpo_prest}_{data_ini_envio}", []) +
                       mapa_retorno.get(f"OPER_{n_limpo_oper}_{data_ini_envio}", []) +
                       mapa_retorno.get(f"SENH_{limpar_numero(senha_raw)}_{data_ini_envio}", []) +
@@ -222,31 +229,49 @@ def processar_xmls(envio_file, retorno_file):
 
         t_g_inf, t_g_lib = 0.0, 0.0
         
+        # CORREÇÃO PRINCIPAL: O laço agora caminha estritamente sobre os itens do ENVIO
         for idx_env, item_env in enumerate(itens_env):
             servico = item_env.find('.//ans:servicosExecutados', ns) if item_env.tag.endswith('despesa') else item_env
+            
+            # Dados do procedimento do envio
+            proc_env = servico.find('.//ans:procedimento', ns) if servico.find('.//ans:procedimento', ns) is not None else servico
+            cod_tabela_env = proc_env.find('ans:codigoTabela', ns).text if proc_env.find('ans:codigoTabela', ns) is not None else "00"
+            cod_proc_env = proc_env.find('ans:codigoProcedimento', ns).text if proc_env.find('ans:codigoProcedimento', ns) is not None else "00"
+            desc_proc_env = proc_env.find('ans:descricaoProcedimento', ns).text if proc_env.find('ans:descricaoProcedimento', ns) is not None else "PROCEDIMENTO"
+            
             v_total_el = servico.find('.//ans:valorTotal', ns) if tag_name != 'guiaconsulta' else item_env.find('.//ans:valorProcedimento', ns)
             v_env_str = f"{float(v_total_el.text):.2f}" if (v_total_el is not None and v_total_el.text) else "0.00"
-            
-            res = next((it for it in itens_ret_disponiveis if not it['usado'] and it['v_inf'] == v_env_str), None)
-            if res: res['usado'] = True
 
-            v_inf, v_lib = (res['v_inf'], res['v_lib']) if res else (v_env_str, "0.00")
-            
+            qtd_env_el = servico.find('.//ans:quantidadeExecutada', ns)
+            qtd_env_str = f"{float(qtd_env_el.text):.2f}" if (qtd_env_el is not None and qtd_env_el.text) else "1.00"
+
+            # Tenta encontrar correspondência no retorno pelo código do procedimento ou valor
+            res = next((it for it in itens_ret_disponiveis if not it['usado'] and (it['cod_ret'] == cod_proc_env or it['v_inf'] == v_env_str)), None)
+            if res: 
+                res['usado'] = True
+                v_inf = res['v_inf']
+                v_lib = res['v_lib']
+                qtd_val = res['qtd_ret']
+                desc_final = res['desc_ret'] if res['desc_ret'] else desc_proc_env
+                glosa_orig = res['glosa_original']
+            else:
+                v_inf = v_env_str
+                v_lib = v_env_str  # Se não houver retorno para o item, assume liberado integral
+                qtd_val = qtd_env_str
+                desc_final = desc_proc_env
+                glosa_orig = ""
+
             det = ET.SubElement(rel_guia, '{http://www.ans.gov.br/padroes/tiss/schemas}detalhesGuia')
             ET.SubElement(det, '{http://www.ans.gov.br/padroes/tiss/schemas}sequencialItem').text = str(idx_env + 1)
             ET.SubElement(det, '{http://www.ans.gov.br/padroes/tiss/schemas}dataRealizacao').text = data_ini_val
             
             ptag = ET.SubElement(det, '{http://www.ans.gov.br/padroes/tiss/schemas}procedimento')
-            proc_env = servico.find('.//ans:procedimento', ns) if servico.find('.//ans:procedimento', ns) is not None else servico
-            ET.SubElement(ptag, '{http://www.ans.gov.br/padroes/tiss/schemas}codigoTabela').text = proc_env.find('.//ans:codigoTabela', ns).text if proc_env.find('.//ans:codigoTabela', ns) is not None else "00"
-            ET.SubElement(ptag, '{http://www.ans.gov.br/padroes/tiss/schemas}codigoProcedimento').text = proc_env.find('.//ans:codigoProcedimento', ns).text if proc_env.find('.//ans:codigoProcedimento', ns) is not None else "00"
-            ET.SubElement(ptag, '{http://www.ans.gov.br/padroes/tiss/schemas}descricaoProcedimento').text = res['desc_ret'] if (res and res['desc_ret']) else "PROCEDIMENTO"
+            ET.SubElement(ptag, '{http://www.ans.gov.br/padroes/tiss/schemas}codigoTabela').text = cod_tabela_env
+            ET.SubElement(ptag, '{http://www.ans.gov.br/padroes/tiss/schemas}codigoProcedimento').text = cod_proc_env
+            ET.SubElement(ptag, '{http://www.ans.gov.br/padroes/tiss/schemas}descricaoProcedimento').text = desc_final
             
             ET.SubElement(det, '{http://www.ans.gov.br/padroes/tiss/schemas}valorInformado').text = v_inf
-            
-            qtd_env_el = servico.find('.//ans:quantidadeExecutada', ns)
-            ET.SubElement(det, '{http://www.ans.gov.br/padroes/tiss/schemas}qtdExecutada').text = f"{float(qtd_env_el.text):.2f}" if (qtd_env_el is not None and qtd_env_el.text) else "1.00"
-            
+            ET.SubElement(det, '{http://www.ans.gov.br/padroes/tiss/schemas}qtdExecutada').text = qtd_val
             ET.SubElement(det, '{http://www.ans.gov.br/padroes/tiss/schemas}valorProcessado').text = v_inf
             ET.SubElement(det, '{http://www.ans.gov.br/padroes/tiss/schemas}valorLiberado').text = v_lib
 
@@ -256,8 +281,8 @@ def processar_xmls(envio_file, retorno_file):
                 rg = ET.SubElement(det, '{http://www.ans.gov.br/padroes/tiss/schemas}relacaoGlosa')
                 ET.SubElement(rg, '{http://www.ans.gov.br/padroes/tiss/schemas}valorGlosa').text = f"{valor_glosa_final:.2f}"
                 
-                if res and res.get('glosa_original'):
-                    rg_tipo = res['glosa_original']
+                if glosa_orig:
+                    rg_tipo = glosa_orig
                 else:
                     rg_tipo = '1705' if is_amazonia else '1801'
                     
