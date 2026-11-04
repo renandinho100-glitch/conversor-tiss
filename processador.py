@@ -43,6 +43,11 @@ def processar_xmls(envio_file, retorno_file):
     # 1. MAPEAMENTO DO RETORNO COM CHAVE COMPOSTA (Número + Data de Início)
     mapa_retorno = {}
 
+    def adicionar_ao_mapa(chave, dados):
+        if chave not in mapa_retorno:
+            mapa_retorno[chave] = []
+        mapa_retorno[chave].append(dados)
+
     for relacao in root_ret.findall('.//ans:relacaoGuias', ns):
         n_guia_prest_ret = relacao.find('.//ans:numeroGuiaPrestador', ns)
         n_guia_oper_ret = relacao.find('.//ans:numeroGuiaOperadora', ns)
@@ -76,21 +81,20 @@ def processar_xmls(envio_file, retorno_file):
         
         dados_guia = {'meta': meta, 'itens': itens_ret_lista, 'usado': False}
 
-        # Cria chaves incluindo a data de início do faturamento para desambiguar períodos diferentes
         if n_guia_prest_ret is not None and n_guia_prest_ret.text: 
             p_num = limpar_numero(n_guia_prest_ret.text)
-            mapa_retorno[f"GUIA_{p_num}_{d_ini_ret}"] = dados_guia
-            mapa_retorno[f"GUIA_{p_num}"] = dados_guia # Fallback simples
+            adicionar_ao_mapa(f"GUIA_{p_num}_{d_ini_ret}", dados_guia)
+            adicionar_ao_mapa(f"GUIA_{p_num}", dados_guia)
         if n_guia_oper_ret is not None and n_guia_oper_ret.text: 
             o_num = limpar_numero(n_guia_oper_ret.text)
-            mapa_retorno[f"OPER_{o_num}_{d_ini_ret}"] = dados_guia
-            mapa_retorno[f"OPER_{o_num}"] = dados_guia
+            adicionar_ao_mapa(f"OPER_{o_num}_{d_ini_ret}", dados_guia)
+            adicionar_ao_mapa(f"OPER_{o_num}", dados_guia)
         if carteira_ret is not None and carteira_ret.text: 
             c_num = limpar_numero(carteira_ret.text)
-            mapa_retorno[f"CART_{c_num}_{d_ini_ret}"] = dados_guia
+            adicionar_ao_mapa(f"CART_{c_num}_{d_ini_ret}", dados_guia)
         if senha_ret is not None and senha_ret.text: 
             s_num = limpar_numero(senha_ret.text)
-            mapa_retorno[f"SENH_{s_num}_{d_ini_ret}"] = dados_guia
+            adicionar_ao_mapa(f"SENH_{s_num}_{d_ini_ret}", dados_guia)
 
     # 2. ESTRUTURA DO NOVO XML
     novo_root = ET.Element('{http://www.ans.gov.br/padroes/tiss/schemas}mensagemTISS', {
@@ -144,8 +148,11 @@ def processar_xmls(envio_file, retorno_file):
         n_limpo_prest = limpar_numero(n_guia_prest_raw)
         n_limpo_oper = limpar_numero(n_guia_oper_raw)
 
-        # Extração flexível de procedimentos/despesas
-        itens_env = elemento.findall('.//ans:procedimentoExecutado', ns) + elemento.findall('.//ans:despesa', ns) + elemento.findall('.//ans:procedimento', ns)
+        # Extração corrigida de procedimentos sem duplicar nós internos
+        if tag_name == 'guiaconsulta':
+            itens_env = elemento.findall('.//ans:procedimento', ns)
+        else:
+            itens_env = elemento.findall('.//ans:procedimentoExecutado', ns) + elemento.findall('.//ans:despesa', ns)
         
         if not itens_env:
             continue
@@ -166,17 +173,19 @@ def processar_xmls(envio_file, retorno_file):
         data_fim_envio = d_fim_el.text if d_fim_el is not None else data_ini_envio
 
         # BUSCA REFINADA NO MAPA UTILIZANDO NÚMERO + DATA
-        guia_retorno = (mapa_retorno.get(f"GUIA_{n_limpo_prest}_{data_ini_envio}") or 
-                        mapa_retorno.get(f"OPER_{n_limpo_oper}_{data_ini_envio}") or
-                        mapa_retorno.get(f"SENH_{limpar_numero(senha_raw)}_{data_ini_envio}") or
-                        mapa_retorno.get(f"CART_{limpar_numero(carteira_raw)}_{data_ini_envio}") or
-                        mapa_retorno.get(f"GUIA_{n_limpo_prest}") or
-                        mapa_retorno.get(f"OPER_{n_limpo_oper}"))
+        candidatos = (mapa_retorno.get(f"GUIA_{n_limpo_prest}_{data_ini_envio}", []) +
+                      mapa_retorno.get(f"OPER_{n_limpo_oper}_{data_ini_envio}", []) +
+                      mapa_retorno.get(f"SENH_{limpar_numero(senha_raw)}_{data_ini_envio}", []) +
+                      mapa_retorno.get(f"CART_{limpar_numero(carteira_raw)}_{data_ini_envio}", []) +
+                      mapa_retorno.get(f"GUIA_{n_limpo_prest}", []) +
+                      mapa_retorno.get(f"OPER_{n_limpo_oper}", []))
 
-        if not guia_retorno or guia_retorno.get('usado'):
+        opcoes_disponiveis = [c for c in candidatos if not c['usado']]
+
+        if not opcoes_disponiveis:
             continue
 
-        # Marca como usada para que a próxima iteração não pegue a mesma guia
+        guia_retorno = opcoes_disponiveis[0]
         guia_retorno['usado'] = True
 
         m = guia_retorno['meta']
@@ -196,7 +205,6 @@ def processar_xmls(envio_file, retorno_file):
         envio_h_fim = h_fim_el.text if h_fim_el is not None else ""
         
         if is_amazonia:
-            # Amazônia exige horas zeradas (00:00:00), mas MANTÉM as datas de início e fim enviadas
             hora_ini_val = "00:00:00"
             hora_fim_val = "00:00:00"
         else:
