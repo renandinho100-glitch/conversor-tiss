@@ -236,9 +236,13 @@ def processar_xmls(envio_file, retorno_file):
 
         t_g_inf, t_g_lib = 0.0, 0.0
         
-        for idx_env, item_env in enumerate(itens_env):
+        for item_env in itens_env:
             servico = item_env.find('.//ans:servicosExecutados', ns) if item_env.tag.endswith('despesa') else item_env
             
+            # Captura o sequencial real informado no XML de envio (ex: 176)
+            seq_env_el = item_env.find('.//ans:sequencialItem', ns) or servico.find('.//ans:sequencialItem', ns)
+            seq_env_str = seq_env_el.text.strip() if (seq_env_el is not None and seq_env_el.text) else "1"
+
             proc_env = servico.find('.//ans:procedimento', ns) if servico.find('.//ans:procedimento', ns) is not None else servico
             cod_tabela_env = proc_env.find('ans:codigoTabela', ns).text if proc_env.find('ans:codigoTabela', ns) is not None else "00"
             cod_proc_env = proc_env.find('ans:codigoProcedimento', ns).text if proc_env.find('ans:codigoProcedimento', ns) is not None else "00"
@@ -250,9 +254,7 @@ def processar_xmls(envio_file, retorno_file):
             qtd_env_el = servico.find('.//ans:quantidadeExecutada', ns)
             qtd_env_str = f"{float(qtd_env_el.text):.2f}" if (qtd_env_el is not None and qtd_env_el.text) else "1.00"
 
-            seq_env_str = str(idx_env + 1)
-
-            # Pareamento rigoroso
+            # --- PAREAMENTO RIGOROSO USANDO O SEQUENCIAL REAL DO ENVIO ---
             res = next((it for it in itens_ret_disponiveis if it['sequencial_ret'] == seq_env_str and it['cod_ret'] == cod_proc_env), None)
             if not res:
                 res = next((it for it in itens_ret_disponiveis if it['sequencial_ret'] == seq_env_str), None)
@@ -265,19 +267,16 @@ def processar_xmls(envio_file, retorno_file):
                 v_inf = res['v_inf']
                 v_lib = res['v_lib']
                 qtd_val = res['qtd_ret']
-                desc_final = res['desc_ret'] if res['desc_ret'] else desc_proc_env
                 glosa_orig = res['glosa_original']
                 if res in itens_ret_disponiveis:
                     itens_ret_disponiveis.remove(res)
             else:
-                # GLOSA TOTAL POR AUSÊNCIA NO RETORNO: Força 1701
+                # Glosa total por ausência no retorno: força 1701
                 v_inf = v_env_str
                 v_lib = "0.00" 
                 qtd_val = qtd_env_str
-                desc_final = desc_proc_env
                 glosa_orig = "1701"  
 
-            # REGRA UNIMED: Garantia absoluta de que se for 1099 vira 1701
             if glosa_orig == '1099':
                 glosa_orig = '1701'
 
@@ -288,10 +287,9 @@ def processar_xmls(envio_file, retorno_file):
             ptag = ET.SubElement(det, '{http://www.ans.gov.br/padroes/tiss/schemas}procedimento')
             ET.SubElement(ptag, '{http://www.ans.gov.br/padroes/tiss/schemas}codigoTabela').text = cod_tabela_env
             
-            # --- REGRA DE PRIORIDADE DO CÓDIGO DE PROCEDIMENTO DO ENVIO ---
+            # --- CÓDIGO E DESCRIÇÃO SEMPRE DO ENVIO ---
             ET.SubElement(ptag, '{http://www.ans.gov.br/padroes/tiss/schemas}codigoProcedimento').text = cod_proc_env
-            
-            ET.SubElement(ptag, '{http://www.ans.gov.br/padroes/tiss/schemas}descricaoProcedimento').text = desc_final
+            ET.SubElement(ptag, '{http://www.ans.gov.br/padroes/tiss/schemas}descricaoProcedimento').text = desc_proc_env
             
             ET.SubElement(det, '{http://www.ans.gov.br/padroes/tiss/schemas}valorInformado').text = v_inf
             ET.SubElement(det, '{http://www.ans.gov.br/padroes/tiss/schemas}qtdExecutada').text = qtd_val
@@ -304,11 +302,7 @@ def processar_xmls(envio_file, retorno_file):
                 rg = ET.SubElement(det, '{http://www.ans.gov.br/padroes/tiss/schemas}relacaoGlosa')
                 ET.SubElement(rg, '{http://www.ans.gov.br/padroes/tiss/schemas}valorGlosa').text = f"{valor_glosa_final:.2f}"
                 
-                if glosa_orig:
-                    rg_tipo = glosa_orig
-                else:
-                    rg_tipo = '1701' if v_lib_f == 0.0 else '1801'
-                    
+                rg_tipo = glosa_orig if glosa_orig else ('1701' if v_lib_f == 0.0 else '1801')
                 ET.SubElement(rg, '{http://www.ans.gov.br/padroes/tiss/schemas}tipoGlosa').text = rg_tipo
 
             t_g_inf += v_inf_f
