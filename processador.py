@@ -40,7 +40,7 @@ def processar_xmls(envio_file, retorno_file):
     # Agrupador de regras especiais (Amazônia e CASF)
     aplicar_regra_especial = is_amazonia or is_casf
 
-    # 1. MAPEAMENTO DO RETORNO COM CHAVE COMPOSTA (Número + Data de Início + Carteira limpa)
+    # 1. MAPEAMENTO DO RETORNO COM CHAVE COMPOSTA
     mapa_retorno = {}
 
     def adicionar_ao_mapa(chave, dados):
@@ -254,16 +254,24 @@ def processar_xmls(envio_file, retorno_file):
             qtd_env_el = servico.find('.//ans:quantidadeExecutada', ns)
             qtd_env_str = f"{float(qtd_env_el.text):.2f}" if (qtd_env_el is not None and qtd_env_el.text) else "1.00"
 
-            # --- PAREAMENTO RIGOROSO USANDO O SEQUENCIAL REAL DO ENVIO ---
+            # --- PAREAMENTO ROBUSTO E SEGURO ---
+            # 1. Tenta buscar estritamente pelo Sequencial E pelo Código do Procedimento
             res = next((it for it in itens_ret_disponiveis if it['sequencial_ret'] == seq_env_str and it['cod_ret'] == cod_proc_env), None)
+            
+            # 2. Se não achar, busca apenas pelo Sequencial exato
             if not res:
                 res = next((it for it in itens_ret_disponiveis if it['sequencial_ret'] == seq_env_str), None)
+
+            # 3. Se não achar por sequencial, busca pelo Código do Procedimento E pelo Valor Informado de Envio
             if not res:
                 res = next((it for it in itens_ret_disponiveis if it['cod_ret'] == cod_proc_env and it['v_inf'] == v_env_str), None)
+
+            # 4. Fallback final pelo Código do Procedimento
             if not res:
                 res = next((it for it in itens_ret_disponiveis if it['cod_ret'] == cod_proc_env), None)
             
             if res: 
+                # Se encontrou no retorno, usa o valor informado/liberado correspondente daquele item exato
                 v_inf = res['v_inf']
                 v_lib = res['v_lib']
                 qtd_val = res['qtd_ret']
@@ -271,7 +279,7 @@ def processar_xmls(envio_file, retorno_file):
                 if res in itens_ret_disponiveis:
                     itens_ret_disponiveis.remove(res)
             else:
-                # Glosa total por ausência no retorno: força 1701
+                # Glosa total por ausência no retorno: usa o valor total do envio e força 1701
                 v_inf = v_env_str
                 v_lib = "0.00" 
                 qtd_val = qtd_env_str
@@ -287,7 +295,7 @@ def processar_xmls(envio_file, retorno_file):
             ptag = ET.SubElement(det, '{http://www.ans.gov.br/padroes/tiss/schemas}procedimento')
             ET.SubElement(ptag, '{http://www.ans.gov.br/padroes/tiss/schemas}codigoTabela').text = cod_tabela_env
             
-            # --- CÓDIGO E DESCRIÇÃO SEMPRE DO ENVIO ---
+            # --- GARANTE O CÓDIGO E DESCRIÇÃO DO ENVIO ---
             ET.SubElement(ptag, '{http://www.ans.gov.br/padroes/tiss/schemas}codigoProcedimento').text = cod_proc_env
             ET.SubElement(ptag, '{http://www.ans.gov.br/padroes/tiss/schemas}descricaoProcedimento').text = desc_proc_env
             
