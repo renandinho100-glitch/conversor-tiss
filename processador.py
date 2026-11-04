@@ -270,7 +270,7 @@ def processar_xmls(envio_file, retorno_file):
                 if res in itens_ret_disponiveis:
                     itens_ret_disponiveis.remove(res)
             else:
-                # GLOSA TOTAL POR AUSÊNCIA NO RETORNO: Força 1701 em vez de 1099
+                # GLOSA TOTAL POR AUSÊNCIA NO RETORNO: Força 1701
                 v_inf = v_env_str
                 v_lib = "0.00" 
                 qtd_val = qtd_env_str
@@ -287,7 +287,10 @@ def processar_xmls(envio_file, retorno_file):
             
             ptag = ET.SubElement(det, '{http://www.ans.gov.br/padroes/tiss/schemas}procedimento')
             ET.SubElement(ptag, '{http://www.ans.gov.br/padroes/tiss/schemas}codigoTabela').text = cod_tabela_env
+            
+            # --- REGRA DE PRIORIDADE DO CÓDIGO DE PROCEDIMENTO DO ENVIO ---
             ET.SubElement(ptag, '{http://www.ans.gov.br/padroes/tiss/schemas}codigoProcedimento').text = cod_proc_env
+            
             ET.SubElement(ptag, '{http://www.ans.gov.br/padroes/tiss/schemas}descricaoProcedimento').text = desc_final
             
             ET.SubElement(det, '{http://www.ans.gov.br/padroes/tiss/schemas}valorInformado').text = v_inf
