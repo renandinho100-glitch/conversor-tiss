@@ -16,7 +16,6 @@ def limpar_hora(hora_texto):
     return "00:00:00"
 
 def processar_xmls(envio_file, retorno_file):
-    # Namespaces padrão TISS
     ns = {'ans': 'http://www.ans.gov.br/padroes/tiss/schemas'}
     ET.register_namespace('ans', "http://www.ans.gov.br/padroes/tiss/schemas")
     ET.register_namespace('xsi', "http://www.w3.org/2001/XMLSchema-instance")
@@ -29,18 +28,14 @@ def processar_xmls(envio_file, retorno_file):
     except Exception as e:
         return f"Erro ao ler arquivos XML: {e}"
 
-    # Identificação do Convênio
     reg_ans_el = root_ret.find('.//ans:registroANS', ns)
     reg_ans_texto = reg_ans_el.text if reg_ans_el is not None else ""
     
-    # Flags de Convênio
     is_amazonia = reg_ans_texto == '419052'
     is_casf = reg_ans_texto == '358754'
-    
-    # Agrupador de regras especiais (Amazônia e CASF)
     aplicar_regra_especial = is_amazonia or is_casf
 
-    # 1. MAPEAMENTO DO RETORNO COM CHAVE COMPOSTA
+    # 1. MAPEAMENTO DO RETORNO POR GUIA
     mapa_retorno = {}
 
     def adicionar_ao_mapa(chave, dados):
@@ -71,11 +66,9 @@ def processar_xmls(envio_file, retorno_file):
             qtd_ret_el = item.find('.//ans:qtdExecutada', ns)
             qtd_ret_val = qtd_ret_el.text.strip() if (qtd_ret_el is not None and qtd_ret_el.text) else "1.00"
 
-            # Captura segura de glosas
             glosa_el = item.find('.//ans:relacaoGlosa/ans:tipoGlosa', ns)
             glosa_original = glosa_el.text.strip() if (glosa_el is not None and glosa_el.text) else ""
             
-            # REGRA UNIMED: Substituir imediatamente o código 1099 por 1701
             if glosa_original == '1099':
                 glosa_original = '1701'
             
@@ -136,22 +129,14 @@ def processar_xmls(envio_file, retorno_file):
 
     total_inf_geral, total_lib_geral = 0.0, 0.0
 
-    # 3. PROCESSAMENTO DAS GUIAS DO ENVIO
     tags_guias_validas = {
-        'guiaconsulta', 
-        'guiasadt', 
-        'guiasp-sadt', 
-        'guiasp_sadt',
-        'guiaresumointernacao',
-        'guiainternacao',
-        'guiahonorarios', 
-        'guiahonorario',
-        'guiafaturamento'
+        'guiaconsulta', 'guiasadt', 'guiasp-sadt', 'guiasp_sadt',
+        'guiaresumointernacao', 'guiainternacao', 'guiahonorarios', 
+        'guiahonorario', 'guiafaturamento'
     }
 
     for elemento in root_env.findall('.//*', ns):
         tag_name = elemento.tag.split('}')[-1].lower()
-        
         if tag_name not in tags_guias_validas:
             continue
             
@@ -196,7 +181,6 @@ def processar_xmls(envio_file, retorno_file):
                     mapa_retorno.get(f"CART_{cart_limpa_env}", []))
 
         opcoes_disponiveis = [c for c in candidatos if not c['usado']]
-
         if not opcoes_disponiveis:
             continue
 
@@ -239,7 +223,6 @@ def processar_xmls(envio_file, retorno_file):
         for item_env in itens_env:
             servico = item_env.find('.//ans:servicosExecutados', ns) if item_env.tag.endswith('despesa') else item_env
             
-            # Captura o sequencial real informado no XML de envio (ex: 176)
             seq_env_el = item_env.find('.//ans:sequencialItem', ns) or servico.find('.//ans:sequencialItem', ns)
             seq_env_str = seq_env_el.text.strip() if (seq_env_el is not None and seq_env_el.text) else "1"
 
@@ -254,24 +237,20 @@ def processar_xmls(envio_file, retorno_file):
             qtd_env_el = servico.find('.//ans:quantidadeExecutada', ns)
             qtd_env_str = f"{float(qtd_env_el.text):.2f}" if (qtd_env_el is not None and qtd_env_el.text) else "1.00"
 
-            # --- PAREAMENTO ROBUSTO E SEGURO ---
-            # 1. Tenta buscar estritamente pelo Sequencial E pelo Código do Procedimento
-            res = next((it for it in itens_ret_disponiveis if it['sequencial_ret'] == seq_env_str and it['cod_ret'] == cod_proc_env), None)
+            # --- NOVA REGRA DE PAREAMENTO FLEXÍVEL INDEPENDENTE DA ORDEM ---
+            # 1. Tenta por Código do Procedimento + Valor exato do Envio
+            res = next((it for it in itens_ret_disponiveis if it['cod_ret'] == cod_proc_env and it['v_inf'] == v_env_str), None)
             
-            # 2. Se não achar, busca apenas pelo Sequencial exato
-            if not res:
-                res = next((it for it in itens_ret_disponiveis if it['sequencial_ret'] == seq_env_str), None)
-
-            # 3. Se não achar por sequencial, busca pelo Código do Procedimento E pelo Valor Informado de Envio
-            if not res:
-                res = next((it for it in itens_ret_disponiveis if it['cod_ret'] == cod_proc_env and it['v_inf'] == v_env_str), None)
-
-            # 4. Fallback final pelo Código do Procedimento
+            # 2. Se não achar, tenta buscar apenas pelo Código do Procedimento na guia inteira do retorno
             if not res:
                 res = next((it for it in itens_ret_disponiveis if it['cod_ret'] == cod_proc_env), None)
+
+            # 3. Se não achar pelo código, tenta pelo sequencial exato
+            if not res:
+                res = next((it for it in itens_ret_disponiveis if it['sequencial_ret'] == seq_env_str), None)
             
             if res: 
-                # Se encontrou no retorno, usa o valor informado/liberado correspondente daquele item exato
+                # Puxa estritamente os valores financeiros do par correspondente encontrado no retorno
                 v_inf = res['v_inf']
                 v_lib = res['v_lib']
                 qtd_val = res['qtd_ret']
@@ -279,7 +258,7 @@ def processar_xmls(envio_file, retorno_file):
                 if res in itens_ret_disponiveis:
                     itens_ret_disponiveis.remove(res)
             else:
-                # Glosa total por ausência no retorno: usa o valor total do envio e força 1701
+                # Glosa total por ausência no retorno: assume o valor do envio e força 1701
                 v_inf = v_env_str
                 v_lib = "0.00" 
                 qtd_val = qtd_env_str
@@ -295,7 +274,7 @@ def processar_xmls(envio_file, retorno_file):
             ptag = ET.SubElement(det, '{http://www.ans.gov.br/padroes/tiss/schemas}procedimento')
             ET.SubElement(ptag, '{http://www.ans.gov.br/padroes/tiss/schemas}codigoTabela').text = cod_tabela_env
             
-            # --- GARANTE O CÓDIGO E DESCRIÇÃO DO ENVIO ---
+            # --- CÓDIGO E DESCRIÇÃO OBRIGATÓRIAMENTE DO ENVIO ---
             ET.SubElement(ptag, '{http://www.ans.gov.br/padroes/tiss/schemas}codigoProcedimento').text = cod_proc_env
             ET.SubElement(ptag, '{http://www.ans.gov.br/padroes/tiss/schemas}descricaoProcedimento').text = desc_proc_env
             
