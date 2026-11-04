@@ -77,7 +77,11 @@ def processar_xmls(envio_file, retorno_file):
             cod_proc_ret = p_elem.find('ans:codigoProcedimento', ns).text.strip() if (p_elem is not None and p_elem.find('ans:codigoProcedimento', ns) is not None) else ""
             desc_proc_ret = p_elem.find('ans:descricaoProcedimento', ns).text.strip() if (p_elem is not None and p_elem.find('ans:descricaoProcedimento', ns) is not None) else "PROCEDIMENTO"
 
+            seq_item_el = item.find('.//ans:sequencialItem', ns)
+            seq_item_ret = seq_item_el.text.strip() if (seq_item_el is not None and seq_item_el.text) else ""
+
             itens_ret_lista.append({
+                'sequencial_ret': seq_item_ret,
                 'cod_ret': cod_proc_ret,
                 'desc_ret': desc_proc_ret,
                 'v_inf': f"{float(v_inf_raw):.2f}",
@@ -181,12 +185,12 @@ def processar_xmls(envio_file, retorno_file):
         data_fim_envio = d_fim_el.text if d_fim_el is not None else data_ini_envio
 
         candidatos = (mapa_retorno.get(f"GUIA_{n_limpo_prest}_{data_ini_envio}", []) +
-                      mapa_retorno.get(f"OPER_{n_limpo_oper}_{data_ini_envio}", []) +
-                      mapa_retorno.get(f"CART_{cart_limpa_env}_{data_ini_envio}", []) +
-                      mapa_retorno.get(f"SENH_{limpar_numero(senha_raw)}_{data_ini_envio}", []) +
-                      mapa_retorno.get(f"GUIA_{n_limpo_prest}", []) +
-                      mapa_retorno.get(f"OPER_{n_limpo_oper}", []) +
-                      mapa_retorno.get(f"CART_{cart_limpa_env}", []))
+                    mapa_retorno.get(f"OPER_{n_limpo_oper}_{data_ini_envio}", []) +
+                    mapa_retorno.get(f"CART_{cart_limpa_env}_{data_ini_envio}", []) +
+                    mapa_retorno.get(f"SENH_{limpar_numero(senha_raw)}_{data_ini_envio}", []) +
+                    mapa_retorno.get(f"GUIA_{n_limpo_prest}", []) +
+                    mapa_retorno.get(f"OPER_{n_limpo_oper}", []) +
+                    mapa_retorno.get(f"CART_{cart_limpa_env}", []))
 
         opcoes_disponiveis = [c for c in candidatos if not c['usado']]
 
@@ -245,8 +249,12 @@ def processar_xmls(envio_file, retorno_file):
             qtd_env_el = servico.find('.//ans:quantidadeExecutada', ns)
             qtd_env_str = f"{float(qtd_env_el.text):.2f}" if (qtd_env_el is not None and qtd_env_el.text) else "1.00"
 
-            # Busca item correspondente no retorno pelo código do procedimento ou valor exato
-            res = next((it for it in itens_ret_disponiveis if it['cod_ret'] == cod_proc_env or it['v_inf'] == v_env_str), None)
+            seq_env_str = str(idx_env + 1)
+
+            # --- REGRA UNIMED INTERNAÇÃO: CHAVE DUPLA (Sequencial + Código) COM FALLBACK ---
+            res = next((it for it in itens_ret_disponiveis if it['sequencial_ret'] == seq_env_str and it['cod_ret'] == cod_proc_env), None)
+            if not res:
+                res = next((it for it in itens_ret_disponiveis if it['cod_ret'] == cod_proc_env or it['v_inf'] == v_env_str), None)
             
             if res: 
                 v_inf = res['v_inf']
@@ -255,14 +263,15 @@ def processar_xmls(envio_file, retorno_file):
                 desc_final = res['desc_ret'] if res['desc_ret'] else desc_proc_env
                 glosa_orig = res['glosa_original']
             else:
+                # REGRA DE GLOSA TOTAL: Item do envio não consta no retorno
                 v_inf = v_env_str
-                v_lib = v_env_str  
+                v_lib = "0.00" 
                 qtd_val = qtd_env_str
                 desc_final = desc_proc_env
-                glosa_orig = ""
+                glosa_orig = "1099"  # Código padrão de glosa total se ausente
 
             det = ET.SubElement(rel_guia, '{http://www.ans.gov.br/padroes/tiss/schemas}detalhesGuia')
-            ET.SubElement(det, '{http://www.ans.gov.br/padroes/tiss/schemas}sequencialItem').text = str(idx_env + 1)
+            ET.SubElement(det, '{http://www.ans.gov.br/padroes/tiss/schemas}sequencialItem').text = seq_env_str
             ET.SubElement(det, '{http://www.ans.gov.br/padroes/tiss/schemas}dataRealizacao').text = data_ini_val
             
             ptag = ET.SubElement(det, '{http://www.ans.gov.br/padroes/tiss/schemas}procedimento')
