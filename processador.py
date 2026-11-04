@@ -71,6 +71,7 @@ def processar_xmls(envio_file, retorno_file):
             qtd_ret_el = item.find('.//ans:qtdExecutada', ns)
             qtd_ret_val = qtd_ret_el.text.strip() if (qtd_ret_el is not None and qtd_ret_el.text) else "1.00"
 
+            # Captura segura de glosas (pode haver mais de uma ou nenhuma)
             glosa_el = item.find('.//ans:relacaoGlosa/ans:tipoGlosa', ns)
             glosa_original = glosa_el.text.strip() if (glosa_el is not None and glosa_el.text) else ""
             
@@ -251,10 +252,21 @@ def processar_xmls(envio_file, retorno_file):
 
             seq_env_str = str(idx_env + 1)
 
-            # --- REGRA UNIMED INTERNAÇÃO: CHAVE DUPLA (Sequencial + Código) COM FALLBACK ---
+            # --- REGRA ROBUSTA DE PAREAMENTO (UNIMED INTERNAÇÃO) ---
+            # 1. Tenta por Sequencial Exato E Código do Procedimento
             res = next((it for it in itens_ret_disponiveis if it['sequencial_ret'] == seq_env_str and it['cod_ret'] == cod_proc_env), None)
+            
+            # 2. Se não achar, tenta buscar por Sequencial Exato apenas (caso o código venha mapeado diferente na operadora)
             if not res:
-                res = next((it for it in itens_ret_disponiveis if it['cod_ret'] == cod_proc_env or it['v_inf'] == v_env_str), None)
+                res = next((it for it in itens_ret_disponiveis if it['sequencial_ret'] == seq_env_str), None)
+
+            # 3. Se não achar por sequencial, busca estritamente pelo Código do Procedimento e Valor Informado
+            if not res:
+                res = next((it for it in itens_ret_disponiveis if it['cod_ret'] == cod_proc_env and it['v_inf'] == v_env_str), None)
+
+            # 4. Fallback final: busca apenas pelo Código do Procedimento
+            if not res:
+                res = next((it for it in itens_ret_disponiveis if it['cod_ret'] == cod_proc_env), None)
             
             if res: 
                 v_inf = res['v_inf']
@@ -262,6 +274,9 @@ def processar_xmls(envio_file, retorno_file):
                 qtd_val = res['qtd_ret']
                 desc_final = res['desc_ret'] if res['desc_ret'] else desc_proc_env
                 glosa_orig = res['glosa_original']
+                # Remove o item da lista de disponíveis para evitar duplicidade de mapeamento cruzado
+                if res in itens_ret_disponiveis:
+                    itens_ret_disponiveis.remove(res)
             else:
                 # REGRA DE GLOSA TOTAL: Item do envio não consta no retorno
                 v_inf = v_env_str
@@ -293,7 +308,7 @@ def processar_xmls(envio_file, retorno_file):
                 if glosa_orig:
                     rg_tipo = glosa_orig
                 else:
-                    rg_tipo = '1705' if is_amazonia else '1801'
+                    rg_tipo = '1099' if v_lib_f == 0.0 else ('1705' if is_amazonia else '1801')
                     
                 ET.SubElement(rg, '{http://www.ans.gov.br/padroes/tiss/schemas}tipoGlosa').text = rg_tipo
 
