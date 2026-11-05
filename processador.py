@@ -3,13 +3,11 @@ from io import BytesIO
 from xml.dom import minidom
 
 def limpar_numero(texto):
-    """Remove zeros à esquerda e espaços para garantir a comparação numérica entre Envio e Retorno."""
     if texto:
         return texto.strip().lstrip('0')
     return ""
 
 def limpar_hora(hora_texto):
-    """Garante que a hora retorne estritamente no formato HH:MM:SS, removendo milissegundos e fuso."""
     if hora_texto:
         hora_limpa = hora_texto.strip()
         return hora_limpa[:8]
@@ -237,17 +235,17 @@ def processar_xmls(envio_file, retorno_file):
             qtd_env_el = servico.find('.//ans:quantidadeExecutada', ns)
             qtd_env_str = f"{float(qtd_env_el.text):.2f}" if (qtd_env_el is not None and qtd_env_el.text) else "1.00"
 
-            # --- REGRA DE PAREAMENTO RIGOROSO POR SEQUENCIAL E CÓDIGO ---
+            # --- PAREAMENTO INTELIGENTE E SEGURO ---
             # 1. Tenta por Sequencial exato do item no retorno
             res = next((it for it in itens_ret_disponiveis if it['sequencial_ret'] == seq_env_str), None)
             
-            # 2. Se não achar por sequencial, busca pelo Código do Procedimento + Valor Informado
+            # 2. Se não achar por sequencial, busca por Código do Procedimento + Valor Informado
             if not res:
                 res = next((it for it in itens_ret_disponiveis if it['cod_ret'] == cod_proc_env and it['v_inf'] == v_env_str), None)
 
-            # 3. Fallback: Busca apenas pelo Código do Procedimento
+            # 3. Fallback: Busca apenas pelo Valor Informado igual na mesma guia
             if not res:
-                res = next((it for it in itens_ret_disponiveis if it['cod_ret'] == cod_proc_env), None)
+                res = next((it for it in itens_ret_disponiveis if it['v_inf'] == v_env_str), None)
             
             if res: 
                 v_inf = res['v_inf']
@@ -257,11 +255,11 @@ def processar_xmls(envio_file, retorno_file):
                 if res in itens_ret_disponiveis:
                     itens_ret_disponiveis.remove(res)
             else:
-                # Caso o item realmente não exista no retorno, assume valor liberado igual a 0.00 (Glosa Total)
+                # Se realmente não houver correspondência, assume liberado igual ao informado (sem glosa arbitrária)
                 v_inf = v_env_str
-                v_lib = "0.00" 
+                v_lib = v_env_str 
                 qtd_val = qtd_env_str
-                glosa_orig = "1701"  
+                glosa_orig = ""  
 
             if glosa_orig == '1099':
                 glosa_orig = '1701'
@@ -285,12 +283,12 @@ def processar_xmls(envio_file, retorno_file):
             v_inf_f, v_lib_f = float(v_inf), float(v_lib)
             valor_glosa_final = round(v_inf_f - v_lib_f, 2)
             
-            # --- PÓS-PAREAMENTO RESTRITO: SÓ CRIA GLOSA SE A DIFERENÇA FOR > 0 ---
+            # --- PÓS-PAREAMENTO RIGOROSO: SÓ CRIA GLOSA SE (VALOR INFORMADO - VALOR LIBERADO) > 0 ---
             if valor_glosa_final > 0.0:
                 rg = ET.SubElement(det, '{http://www.ans.gov.br/padroes/tiss/schemas}relacaoGlosa')
                 ET.SubElement(rg, '{http://www.ans.gov.br/padroes/tiss/schemas}valorGlosa').text = f"{valor_glosa_final:.2f}"
                 
-                rg_tipo = glosa_orig if glosa_orig else ('1701' if v_lib_f == 0.0 else '1801')
+                rg_tipo = glosa_orig if glosa_orig else '1701'
                 ET.SubElement(rg, '{http://www.ans.gov.br/padroes/tiss/schemas}tipoGlosa').text = rg_tipo
 
             t_g_inf += v_inf_f
