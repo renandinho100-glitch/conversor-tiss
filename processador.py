@@ -237,11 +237,11 @@ def processar_xmls(envio_file, retorno_file):
             qtd_env_el = servico.find('.//ans:quantidadeExecutada', ns)
             qtd_env_str = f"{float(qtd_env_el.text):.2f}" if (qtd_env_el is not None and qtd_env_el.text) else "1.00"
 
-            # --- REGRA DE PAREAMENTO HIERÁRQUICO INTELIGENTE ---
-            # 1. Prioridade absoluta: Busca pelo Sequencial exato do item no retorno
+            # --- REGRA DE PAREAMENTO RIGOROSO POR SEQUENCIAL E CÓDIGO ---
+            # 1. Tenta por Sequencial exato do item no retorno
             res = next((it for it in itens_ret_disponiveis if it['sequencial_ret'] == seq_env_str), None)
             
-            # 2. Se não achar pelo sequencial, busca pelo Código do Procedimento + Valor Informado
+            # 2. Se não achar por sequencial, busca pelo Código do Procedimento + Valor Informado
             if not res:
                 res = next((it for it in itens_ret_disponiveis if it['cod_ret'] == cod_proc_env and it['v_inf'] == v_env_str), None)
 
@@ -257,7 +257,7 @@ def processar_xmls(envio_file, retorno_file):
                 if res in itens_ret_disponiveis:
                     itens_ret_disponiveis.remove(res)
             else:
-                # Glosa total por ausência no retorno: assume o valor do envio e força 1701
+                # Caso o item realmente não exista no retorno, assume valor liberado igual a 0.00 (Glosa Total)
                 v_inf = v_env_str
                 v_lib = "0.00" 
                 qtd_val = qtd_env_str
@@ -285,8 +285,8 @@ def processar_xmls(envio_file, retorno_file):
             v_inf_f, v_lib_f = float(v_inf), float(v_lib)
             valor_glosa_final = round(v_inf_f - v_lib_f, 2)
             
-            # --- GERA GLOSA APENAS SE HOUVER DIFERENÇA REAL (VALOR GLOSADO > 0) ---
-            if valor_glosa_final > 0:
+            # --- PÓS-PAREAMENTO RESTRITO: SÓ CRIA GLOSA SE A DIFERENÇA FOR > 0 ---
+            if valor_glosa_final > 0.0:
                 rg = ET.SubElement(det, '{http://www.ans.gov.br/padroes/tiss/schemas}relacaoGlosa')
                 ET.SubElement(rg, '{http://www.ans.gov.br/padroes/tiss/schemas}valorGlosa').text = f"{valor_glosa_final:.2f}"
                 
