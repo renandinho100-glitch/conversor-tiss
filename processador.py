@@ -219,11 +219,15 @@ def processar_xmls(envio_file, retorno_file):
 
         t_g_inf, t_g_lib = 0.0, 0.0
         
-        for item_env in itens_env:
+        for idx_env, item_env in enumerate(itens_env):
             servico = item_env.find('.//ans:servicosExecutados', ns) if item_env.tag.endswith('despesa') else item_env
             
+            # Sequencial original do envio utilizado APENAS para buscar/parear no retorno
             seq_env_el = item_env.find('.//ans:sequencialItem', ns) or servico.find('.//ans:sequencialItem', ns)
-            seq_env_str = seq_env_el.text.strip() if (seq_env_el is not None and seq_env_el.text) else "1"
+            seq_env_orig = seq_env_el.text.strip() if (seq_env_el is not None and seq_env_el.text) else str(idx_env + 1)
+
+            # Sequencial incremental gerado para o XML de saída (1, 2, 3...)
+            seq_env_str = str(idx_env + 1)
 
             proc_env = servico.find('.//ans:procedimento', ns) if servico.find('.//ans:procedimento', ns) is not None else servico
             cod_tabela_env = proc_env.find('ans:codigoTabela', ns).text if proc_env.find('ans:codigoTabela', ns) is not None else "00"
@@ -236,8 +240,8 @@ def processar_xmls(envio_file, retorno_file):
             qtd_env_el = servico.find('.//ans:quantidadeExecutada', ns)
             qtd_env_str = f"{float(qtd_env_el.text):.2f}" if (qtd_env_el is not None and qtd_env_el.text) else "1.00"
 
-            # --- PAREAMENTO INTELIGENTE E SEGURO ---
-            res = next((it for it in itens_ret_disponiveis if it['sequencial_ret'] == seq_env_str), None)
+            # --- PAREAMENTO INTELIGENTE USANDO O SEQUENCIAL ORIGINAL ---
+            res = next((it for it in itens_ret_disponiveis if it['sequencial_ret'] == seq_env_orig), None)
             if not res:
                 res = next((it for it in itens_ret_disponiveis if it['cod_ret'] == cod_proc_env and it['v_inf'] == v_env_str), None)
             if not res:
@@ -260,6 +264,7 @@ def processar_xmls(envio_file, retorno_file):
                 glosa_orig = '1701'
 
             det = ET.SubElement(rel_guia, '{http://www.ans.gov.br/padroes/tiss/schemas}detalhesGuia')
+            # Escreve o sequencial limpo e sequencialmente crescente (1, 2, 3...)
             ET.SubElement(det, '{http://www.ans.gov.br/padroes/tiss/schemas}sequencialItem').text = seq_env_str
             ET.SubElement(det, '{http://www.ans.gov.br/padroes/tiss/schemas}dataRealizacao').text = data_ini_val
             
