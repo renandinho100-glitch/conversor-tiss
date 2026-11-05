@@ -67,7 +67,8 @@ def processar_xmls(envio_file, retorno_file):
             glosa_el = item.find('.//ans:relacaoGlosa/ans:tipoGlosa', ns)
             glosa_original = glosa_el.text.strip() if (glosa_el is not None and glosa_el.text) else ""
             
-            if glosa_original == '1099':
+            # --- REGRA DE CONVERSÃO DE GLOSA (1099 ou 9918 viram 1701) ---
+            if glosa_original in ['1099', '9918']:
                 glosa_original = '1701'
             
             cod_proc_ret = p_elem.find('ans:codigoProcedimento', ns).text.strip() if (p_elem is not None and p_elem.find('ans:codigoProcedimento', ns) is not None) else ""
@@ -236,14 +237,9 @@ def processar_xmls(envio_file, retorno_file):
             qtd_env_str = f"{float(qtd_env_el.text):.2f}" if (qtd_env_el is not None and qtd_env_el.text) else "1.00"
 
             # --- PAREAMENTO INTELIGENTE E SEGURO ---
-            # 1. Tenta por Sequencial exato do item no retorno
             res = next((it for it in itens_ret_disponiveis if it['sequencial_ret'] == seq_env_str), None)
-            
-            # 2. Se não achar por sequencial, busca por Código do Procedimento + Valor Informado
             if not res:
                 res = next((it for it in itens_ret_disponiveis if it['cod_ret'] == cod_proc_env and it['v_inf'] == v_env_str), None)
-
-            # 3. Fallback: Busca apenas pelo Valor Informado igual na mesma guia
             if not res:
                 res = next((it for it in itens_ret_disponiveis if it['v_inf'] == v_env_str), None)
             
@@ -255,13 +251,12 @@ def processar_xmls(envio_file, retorno_file):
                 if res in itens_ret_disponiveis:
                     itens_ret_disponiveis.remove(res)
             else:
-                # Se realmente não houver correspondência, assume liberado igual ao informado (sem glosa arbitrária)
                 v_inf = v_env_str
                 v_lib = v_env_str 
                 qtd_val = qtd_env_str
                 glosa_orig = ""  
 
-            if glosa_orig == '1099':
+            if glosa_orig in ['1099', '9918']:
                 glosa_orig = '1701'
 
             det = ET.SubElement(rel_guia, '{http://www.ans.gov.br/padroes/tiss/schemas}detalhesGuia')
@@ -271,7 +266,6 @@ def processar_xmls(envio_file, retorno_file):
             ptag = ET.SubElement(det, '{http://www.ans.gov.br/padroes/tiss/schemas}procedimento')
             ET.SubElement(ptag, '{http://www.ans.gov.br/padroes/tiss/schemas}codigoTabela').text = cod_tabela_env
             
-            # --- CÓDIGO E DESCRIÇÃO OBRIGATORIAMENTE DO ENVIO ---
             ET.SubElement(ptag, '{http://www.ans.gov.br/padroes/tiss/schemas}codigoProcedimento').text = cod_proc_env
             ET.SubElement(ptag, '{http://www.ans.gov.br/padroes/tiss/schemas}descricaoProcedimento').text = desc_proc_env
             
@@ -283,7 +277,6 @@ def processar_xmls(envio_file, retorno_file):
             v_inf_f, v_lib_f = float(v_inf), float(v_lib)
             valor_glosa_final = round(v_inf_f - v_lib_f, 2)
             
-            # --- PÓS-PAREAMENTO RIGOROSO: SÓ CRIA GLOSA SE (VALOR INFORMADO - VALOR LIBERADO) > 0 ---
             if valor_glosa_final > 0.0:
                 rg = ET.SubElement(det, '{http://www.ans.gov.br/padroes/tiss/schemas}relacaoGlosa')
                 ET.SubElement(rg, '{http://www.ans.gov.br/padroes/tiss/schemas}valorGlosa').text = f"{valor_glosa_final:.2f}"
