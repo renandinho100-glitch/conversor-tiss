@@ -67,7 +67,6 @@ def processar_xmls(envio_file, retorno_file):
             glosa_el = item.find('.//ans:relacaoGlosa/ans:tipoGlosa', ns)
             glosa_original = glosa_el.text.strip() if (glosa_el is not None and glosa_el.text) else ""
             
-            # --- REGRA DE CONVERSÃO DE GLOSA (1099 ou 9918 viram 1701) ---
             if glosa_original in ['1099', '9918']:
                 glosa_original = '1701'
             
@@ -222,10 +221,6 @@ def processar_xmls(envio_file, retorno_file):
         for idx_env, item_env in enumerate(itens_env):
             servico = item_env.find('.//ans:servicosExecutados', ns) if item_env.tag.endswith('despesa') else item_env
             
-            # Sequencial original do envio utilizado APENAS para buscar/parear no retorno
-            seq_env_el = item_env.find('.//ans:sequencialItem', ns) or servico.find('.//ans:sequencialItem', ns)
-            seq_env_orig = seq_env_el.text.strip() if (seq_env_el is not None and seq_env_el.text) else str(idx_env + 1)
-
             # Sequencial incremental gerado para o XML de saída (1, 2, 3...)
             seq_env_str = str(idx_env + 1)
 
@@ -240,12 +235,19 @@ def processar_xmls(envio_file, retorno_file):
             qtd_env_el = servico.find('.//ans:quantidadeExecutada', ns)
             qtd_env_str = f"{float(qtd_env_el.text):.2f}" if (qtd_env_el is not None and qtd_env_el.text) else "1.00"
 
-            # --- PAREAMENTO INTELIGENTE USANDO O SEQUENCIAL ORIGINAL ---
-            res = next((it for it in itens_ret_disponiveis if it['sequencial_ret'] == seq_env_orig), None)
-            if not res:
-                res = next((it for it in itens_ret_disponiveis if it['cod_ret'] == cod_proc_env and it['v_inf'] == v_env_str), None)
+            # --- REGRA DE PAREAMENTO INTELIGENTE POR CÓDIGO E VALOR (IGNORANDO ORDEM DE SEQUENCIAL) ---
+            # 1. Prioridade Absoluta: Busca no retorno pelo código exato do procedimento do envio
+            res = next((it for it in itens_ret_disponiveis if it['cod_ret'] == cod_proc_env), None)
+            
+            # 2. Se não achar pelo código exato, tenta pelo Valor Informado igual na mesma guia
             if not res:
                 res = next((it for it in itens_ret_disponiveis if it['v_inf'] == v_env_str), None)
+
+            # 3. Fallback final: tenta pelo sequencial original se nada mais bater
+            seq_env_el = item_env.find('.//ans:sequencialItem', ns) or servico.find('.//ans:sequencialItem', ns)
+            seq_env_orig = seq_env_el.text.strip() if (seq_env_el is not None and seq_env_el.text) else seq_env_str
+            if not res:
+                res = next((it for it in itens_ret_disponiveis if it['sequencial_ret'] == seq_env_orig), None)
             
             if res: 
                 v_inf = res['v_inf']
