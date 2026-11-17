@@ -67,8 +67,11 @@ def processar_xmls(envio_file, retorno_file):
             glosa_el = item.find('.//ans:relacaoGlosa/ans:tipoGlosa', ns)
             glosa_original = glosa_el.text.strip() if (glosa_el is not None and glosa_el.text) else ""
             
+            # --- REGRAS DE CONVERSÃO DE GLOSA ---
             if glosa_original in ['1099', '9918']:
                 glosa_original = '1701'
+            if is_amazonia and glosa_original == '1799':
+                glosa_original = '1713'
             
             cod_proc_ret = p_elem.find('ans:codigoProcedimento', ns).text.strip() if (p_elem is not None and p_elem.find('ans:codigoProcedimento', ns) is not None) else ""
             desc_proc_ret = p_elem.find('ans:descricaoProcedimento', ns).text.strip() if (p_elem is not None and p_elem.find('ans:descricaoProcedimento', ns) is not None) else "PROCEDIMENTO"
@@ -235,7 +238,7 @@ def processar_xmls(envio_file, retorno_file):
             qtd_env_el = servico.find('.//ans:quantidadeExecutada', ns)
             qtd_env_str = f"{float(qtd_env_el.text):.2f}" if (qtd_env_el is not None and qtd_env_el.text) else "1.00"
 
-            # --- REGRA DE PAREAMENTO INTELIGENTE POR CÓDIGO E VALOR (IGNORANDO ORDEM DE SEQUENCIAL) ---
+            # --- PAREAMENTO INTELIGENTE POR CÓDIGO E VALOR (IGNORANDO ORDEM DE SEQUENCIAL) ---
             # 1. Prioridade Absoluta: Busca no retorno pelo código exato do procedimento do envio
             res = next((it for it in itens_ret_disponiveis if it['cod_ret'] == cod_proc_env), None)
             
@@ -264,6 +267,8 @@ def processar_xmls(envio_file, retorno_file):
 
             if glosa_orig in ['1099', '9918']:
                 glosa_orig = '1701'
+            if is_amazonia and glosa_orig == '1799':
+                glosa_orig = '1713'
 
             det = ET.SubElement(rel_guia, '{http://www.ans.gov.br/padroes/tiss/schemas}detalhesGuia')
             # Escreve o sequencial limpo e sequencialmente crescente (1, 2, 3...)
